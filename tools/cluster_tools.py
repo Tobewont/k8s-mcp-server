@@ -29,9 +29,26 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         导入结果
     """
     try:
+        import os
+        import yaml
+        
+        # 判断kubeconfig是文件路径还是内容
+        kubeconfig_path = kubeconfig
+        if not os.path.exists(kubeconfig):
+            # 如果不是文件路径，则认为是内容，需要先保存到文件
+            try:
+                # 验证kubeconfig内容格式
+                yaml.safe_load(kubeconfig)
+                kubeconfig_path = cluster_config.save_kubeconfig(name, kubeconfig)
+            except yaml.YAMLError:
+                return json.dumps({
+                    "success": False,
+                    "error": "无效的kubeconfig格式"
+                }, ensure_ascii=False, indent=2)
+        
         cluster_info = ClusterInfo(
             name=name,
-            kubeconfig=kubeconfig,
+            kubeconfig_path=kubeconfig_path,
             service_account=service_account,
             namespace=namespace,
             is_default=is_default
@@ -47,7 +64,8 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
                     "name": name,
                     "service_account": service_account,
                     "namespace": namespace,
-                    "is_default": is_default
+                    "is_default": is_default,
+                    "kubeconfig_path": kubeconfig_path
                 }
             }
         else:
@@ -63,9 +81,12 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def list_clusters() -> str:
+async def list_clusters(random_string: str = "") -> str:
     """
     列出所有集群配置
+    
+    Args:
+        random_string: 临时参数，用于解决MCP框架兼容性问题
     
     Returns:
         集群列表
@@ -167,12 +188,8 @@ async def set_default_cluster(name: str) -> str:
         设置结果
     """
     try:
-        # 获取集群信息
-        cluster = cluster_config.get_cluster(name)
-        
-        # 设置为默认集群
-        cluster.is_default = True
-        success = cluster_config.update_cluster(cluster)
+        # 直接使用集群配置管理器的方法设置默认集群
+        success = cluster_config.set_default_cluster(name)
         
         if success:
             result = {
@@ -182,7 +199,7 @@ async def set_default_cluster(name: str) -> str:
         else:
             result = {
                 "success": False,
-                "error": f"设置默认集群失败"
+                "error": f"集群 '{name}' 不存在"
             }
         
         return json.dumps(result, ensure_ascii=False, indent=2)
@@ -212,7 +229,7 @@ async def test_cluster_connection(name: str) -> str:
         cluster = cluster_config.get_cluster(name)
         
         # 加载kubeconfig
-        config.load_kube_config(config_file=cluster.kubeconfig)
+        config.load_kube_config(config_file=cluster.kubeconfig_path)
         
         # 测试连接
         v1 = client.CoreV1Api()
@@ -239,29 +256,30 @@ async def test_cluster_connection(name: str) -> str:
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def get_default_cluster() -> str:
+async def get_default_cluster(random_string: str = "") -> str:
     """
     获取默认集群
+    
+    Args:
+        random_string: 临时参数，用于解决MCP框架兼容性问题
     
     Returns:
         默认集群信息
     """
     try:
-        clusters = cluster_config.list_clusters()
+        default_cluster = cluster_config.get_default_cluster()
         
-        for cluster in clusters:
-            if cluster.is_default:
+        if default_cluster:
                 result = {
                     "success": True,
                     "cluster": {
-                        "name": cluster.name,
-                        "service_account": cluster.service_account,
-                        "namespace": cluster.namespace,
-                        "is_default": cluster.is_default
+                    "name": default_cluster.name,
+                    "service_account": default_cluster.service_account,
+                    "namespace": default_cluster.namespace,
+                    "is_default": default_cluster.is_default
                     }
                 }
-                return json.dumps(result, ensure_ascii=False, indent=2)
-        
+        else:
         result = {
             "success": False,
             "error": "未设置默认集群"

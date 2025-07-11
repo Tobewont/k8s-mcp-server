@@ -197,6 +197,9 @@ class ClusterConfigManager:
         Returns:
             保存的文件路径
         """
+        # 确保kubeconfig目录存在
+        os.makedirs(self.kubeconfigs_dir, exist_ok=True)
+        
         kubeconfig_path = os.path.join(self.kubeconfigs_dir, f"{name}.yaml")
         
         with open(kubeconfig_path, 'w', encoding='utf-8') as f:
