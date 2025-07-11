@@ -6,6 +6,7 @@ Kubernetes MCP Server
 import asyncio
 import argparse
 import sys
+from config import SSE_HOST, SSE_PORT
 from mcp.server.stdio import stdio_server
 from tools import mcp
 
@@ -21,13 +22,13 @@ async def main():
     )
     parser.add_argument(
         '--host',
-        default='localhost',
+        default=SSE_HOST,
         help='SSE服务器主机（仅在SSE模式下使用）'
     )
     parser.add_argument(
         '--port',
         type=int,
-        default=8080,
+        default=SSE_PORT,
         help='SSE服务器端口（仅在SSE模式下使用）'
     )
     
@@ -50,7 +51,7 @@ async def main():
             print(f"Starting Kubernetes MCP Server in SSE mode on {args.host}:{args.port}...", file=sys.stderr)
             
             # 创建应用
-            app = mcp.app
+            from tools import app
             
             # 启动服务器
             config = uvicorn.Config(

@@ -110,6 +110,10 @@ venv.bak/
 logs/
 *.log
 
+# 本地数据文件
+data/
+*.json
+
 # 本地配置文件
 config.local.py 
 

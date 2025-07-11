@@ -98,9 +98,12 @@ async def load_kubeconfig(name: str) -> str:
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def list_kubeconfigs() -> str:
+async def list_kubeconfigs(random_string: str = "") -> str:
     """
     列出所有保存的kubeconfig文件
+    
+    Args:
+        random_string: 临时参数，用于解决MCP框架兼容性问题
     
     Returns:
         kubeconfig文件列表

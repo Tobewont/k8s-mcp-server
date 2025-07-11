@@ -45,7 +45,20 @@ class KubernetesAPIService:
             # 从文件路径加载配置
             config.load_kube_config(config_file=kubeconfig_path)
         else:
-            # 使用默认配置
+            # 尝试从集群管理器获取默认集群的kubeconfig
+            try:
+                from utils.cluster_config import ClusterConfigManager
+                cluster_manager = ClusterConfigManager()
+                default_cluster = cluster_manager.get_default_cluster()
+                
+                if default_cluster and default_cluster.kubeconfig_path:
+                    # 使用默认集群的kubeconfig
+                    config.load_kube_config(config_file=default_cluster.kubeconfig_path)
+                else:
+                    # 如果没有默认集群，尝试使用系统默认配置
+                    config.load_kube_config()
+            except Exception:
+                # 如果获取默认集群失败，回退到系统默认配置
             config.load_kube_config()
         
         # 初始化 API 客户端

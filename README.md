@@ -6,10 +6,11 @@
 
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
-- **多集群支持**：支持管理多个 Kubernetes 集群的配置
+- **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
 - **全面的 K8s 操作**：支持 Pod、Deployment、Service、Node 等资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
+- **双重传输协议**：同时支持 SSE 和 stdio 两种传输方式
 
 ## ⚡ 快速开始
 
@@ -31,14 +32,21 @@ uv pip install -e .
 ### 启动服务
 
 ```bash
-# 开发模式启动
+# 默认 stdio 模式启动（推荐用于MCP客户端）
 python main.py
 
-# 或使用 uvicorn 直接启动
+# 或明确指定 stdio 模式
+python main.py --transport stdio
+
+# SSE 模式启动（支持HTTP接口）
+python main.py --transport sse --host 0.0.0.0 --port 8001
+
+# 或使用 uvicorn 直接启动SSE服务
 uvicorn tools:app --host 0.0.0.0 --port 8001
 ```
 
-服务启动后，MCP 客户端可以通过 SSE 接口（`http://localhost:8001/sse`）连接。
+**stdio 模式**：通过标准输入输出与 MCP 客户端通信（默认）
+**SSE 模式**：通过 Server-Sent Events 接口（`http://localhost:8001/mcp/k8s-server/sse`）提供 HTTP 服务
 
 ## 🏗️ 架构设计
 
@@ -50,11 +58,20 @@ k8s-mcp-server/
 │   ├── __init__.py
 │   └── k8s_api_service.py       # Kubernetes API 服务层
 ├── tools/
-│   ├── __init__.py              # FastMCP 实例
+│   ├── __init__.py              # FastMCP 实例和工具模块导入
 │   ├── k8s_tools.py             # 核心 K8s 资源管理工具
 │   ├── cluster_tools.py         # 多集群配置管理
 │   ├── config_tools.py          # kubeconfig 文件管理
 │   └── diagnostic_tools.py      # 集群诊断工具
+├── utils/
+│   ├── __init__.py
+│   ├── cluster_config.py        # 集群配置管理类
+│   ├── context.py               # 上下文管理
+│   ├── fastmcp_custom.py        # 自定义FastMCP类
+│   └── lowlevel.py              # 底层工具函数
+├── data/
+│   ├── clusters.json            # 集群配置存储
+│   └── kubeconfigs/             # kubeconfig 文件存储目录
 ├── config.py                    # 服务配置
 ├── main.py                      # 服务启动入口
 └── pyproject.toml               # 依赖列表
@@ -65,7 +82,9 @@ k8s-mcp-server/
 1. **Service 层**：`KubernetesAPIService` 封装所有 Kubernetes API 操作
 2. **Tool 层**：使用 `@mcp.tool` 装饰器定义 MCP 工具函数
 3. **统一 MCP 实例**：所有工具共享同一个 FastMCP 实例
-4. **SSE 通信**：通过 Server-Sent Events 与 MCP 客户端通信
+4. **双重传输**：同时支持 SSE 和 stdio 两种传输方式
+5. **智能配置**：自动加载默认集群配置，无需每次指定 kubeconfig
+6. **集群管理**：内置完整的多集群配置管理系统
 
 ## 🛠️ 主要功能
 
@@ -104,21 +123,44 @@ k8s-mcp-server/
 - `check_resource_usage()` - 资源使用分析
 - `get_cluster_events()` - 获取集群事件
 
-### 配置管理 (config_tools.py & cluster_tools.py)
+### 配置管理 (config_tools.py)
 
 - `save_kubeconfig()` - 保存 kubeconfig 文件
 - `list_kubeconfigs()` - 列出已保存的配置
-- `get_kubeconfig_content()` - 获取配置内容
+- `load_kubeconfig()` - 加载配置内容
 - `delete_kubeconfig()` - 删除配置
-- `set_current_cluster()` - 设置当前活跃集群
+- `validate_kubeconfig()` - 验证配置格式
+- `get_kubeconfig_info()` - 获取配置详细信息
+
+### 集群管理 (cluster_tools.py)
+
+- `import_cluster()` - 导入集群配置
+- `list_clusters()` - 列出已配置的集群
+- `get_cluster()` - 获取集群详情
+- `delete_cluster()` - 删除集群配置
+- `set_default_cluster()` - 设置默认集群
+- `get_default_cluster()` - 获取默认集群信息
+- `test_cluster_connection()` - 测试集群连接
 
 ## 📝 使用示例
 
 ### 通过 MCP 客户端调用
 
-所有功能都可以通过 MCP 客户端调用，例如：
+所有功能都可以通过 MCP 客户端调用。系统支持自动加载默认集群配置：
 
 ```json
+// 使用默认集群配置（推荐）
+{
+  "method": "tools/call",
+  "params": {
+    "name": "list_pods",
+    "arguments": {
+      "namespace": "default"
+    }
+  }
+}
+
+// 或明确指定 kubeconfig
 {
   "method": "tools/call",
   "params": {
@@ -127,6 +169,15 @@ k8s-mcp-server/
       "namespace": "default",
       "kubeconfig_path": "/path/to/kubeconfig"
     }
+  }
+}
+
+// 完全使用默认配置（集群和命名空间）
+{
+  "method": "tools/call",
+  "params": {
+    "name": "list_pods",
+    "arguments": {}
   }
 }
 ```
@@ -153,9 +204,13 @@ k8s-mcp-server/
 SSE_HOST=0.0.0.0
 SSE_PORT=8000
 
-# 数据存储目录
+# 日志配置
+LOG_LEVEL=INFO
+
+# 数据存储目录（自动创建）
 DATA_DIR=./data
-KUBECONFIG_DIR=./data/kubeconfigs
+KUBECONFIGS_DIR=./data/kubeconfigs
+LOGS_DIR=./logs
 ```
 
 ### kubeconfig 管理
@@ -165,6 +220,19 @@ KUBECONFIG_DIR=./data/kubeconfigs
 - 多集群配置管理
 - 配置文件的增删改查
 - 集群间快速切换
+- 自动加载默认集群配置
+
+### 自动加载功能
+
+系统提供智能的配置自动加载机制：
+
+1. **默认集群**：设置一个集群为默认集群后，所有工具都会自动使用该集群的配置
+2. **默认命名空间**：每个集群可以设置默认的命名空间
+3. **参数优先级**：明确指定的参数 > 默认集群配置 > 系统默认值
+
+这意味着您可以：
+- 导入集群配置一次，后续无需每次指定 kubeconfig
+- 大部分操作无需指定任何参数，直接使用默认配置
 
 ## 🔍 依赖说明
 
@@ -209,6 +277,17 @@ KUBECONFIG_DIR=./data/kubeconfigs
 - 集群配置存储和管理
 - 快速切换集群上下文
 - 集群列表和状态展示
+- 默认集群自动加载
+- 集群连接测试和验证
+
+### 智能配置系统
+
+提供完整的配置管理体系：
+
+- **自动发现**：自动加载默认集群和命名空间配置
+- **参数简化**：大部分操作无需指定冗余参数
+- **配置验证**：完整的 kubeconfig 格式验证
+- **错误处理**：友好的错误提示和自动回退机制
 
 ## 📚 开发指南
 
@@ -222,14 +301,25 @@ KUBECONFIG_DIR=./data/kubeconfigs
 
 ```python
 @mcp.tool
-def my_new_tool(kubeconfig_path: str = None) -> Dict[str, Any]:
+def my_new_tool(kubeconfig_path: str = None, namespace: str = None) -> Dict[str, Any]:
     """新工具描述"""
     try:
         k8s_service = KubernetesAPIService()
+        # 自动加载配置：如果没有指定 kubeconfig_path，会自动使用默认集群
         k8s_service.load_config(kubeconfig_path=kubeconfig_path)
         
+        # 解析命名空间：如果没有指定，会使用默认集群的命名空间
+        if not namespace:
+            try:
+                from utils.cluster_config import ClusterConfigManager
+                cluster_manager = ClusterConfigManager()
+                default_cluster = cluster_manager.get_default_cluster()
+                namespace = default_cluster.namespace if default_cluster else "default"
+            except:
+                namespace = "default"
+        
         # 使用 k8s_service 进行 API 调用
-        result = k8s_service.some_api_call()
+        result = k8s_service.some_api_call(namespace=namespace)
         
         return {"success": True, "data": result}
     except Exception as e:
@@ -249,6 +339,51 @@ def new_api_method(self, param1: str) -> Dict[str, Any]:
         return self._format_result(result)
     except ApiException as e:
         raise Exception(f"API 调用失败: {e.reason}")
+```
+
+## 🚀 快速入门指南
+
+### 1. 导入集群配置
+
+```bash
+# 启动服务
+python main.py
+
+# 在 MCP 客户端中导入集群
+import_cluster(
+    name="生产环境",
+    kubeconfig="/path/to/kubeconfig",
+    namespace="default",
+    is_default=True
+)
+```
+
+### 2. 使用自动加载功能
+
+一旦设置了默认集群，所有操作都可以简化：
+
+```bash
+# 列出 Pod（自动使用默认集群和命名空间）
+list_pods()
+
+# 查看集群信息
+get_cluster_info()
+
+# 检查集群健康状态
+check_cluster_health()
+```
+
+### 3. 管理多集群
+
+```bash
+# 查看所有集群
+list_clusters()
+
+# 切换默认集群
+set_default_cluster(name="测试环境")
+
+# 测试集群连接
+test_cluster_connection(name="生产环境")
 ```
 
 ## 🤝 贡献

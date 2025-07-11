@@ -11,14 +11,36 @@ from services.k8s_api_service import KubernetesAPIService
 # 导入共享的MCP实例
 from . import mcp
 
+
+def _resolve_namespace(namespace: str = None) -> str:
+    """
+    解析命名空间，如果没有指定则使用默认集群的命名空间
+    
+    Args:
+        namespace: 指定的命名空间
+        
+    Returns:
+        解析后的命名空间
+    """
+    if namespace is not None:
+        return namespace
+    
+    try:
+        from utils.cluster_config import ClusterConfigManager
+        cluster_manager = ClusterConfigManager()
+        default_cluster = cluster_manager.get_default_cluster()
+        return default_cluster.namespace if default_cluster else "default"
+    except Exception:
+        return "default"
+
 @mcp.tool()
-async def list_pods(namespace: str = "default", kubeconfig_path: str = None, 
+async def list_pods(namespace: str = None, kubeconfig_path: str = None, 
               label_selector: str = None) -> str:
     """
     列出指定命名空间中的Pod
     
     Args:
-        namespace: Kubernetes命名空间，默认为default
+        namespace: Kubernetes命名空间，默认使用默认集群的命名空间
         kubeconfig_path: kubeconfig文件路径
         label_selector: 标签选择器
     
@@ -26,6 +48,9 @@ async def list_pods(namespace: str = "default", kubeconfig_path: str = None,
         包含Pod列表的结果
     """
     try:
+        # 解析命名空间
+        namespace = _resolve_namespace(namespace)
+        
         k8s_service = KubernetesAPIService()
         k8s_service.load_config(kubeconfig_path=kubeconfig_path)
         
@@ -157,13 +182,13 @@ async def delete_pod(name: str, namespace: str = "default", kubeconfig_path: str
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def list_deployments(namespace: str = "default", kubeconfig_path: str = None,
+async def list_deployments(namespace: str = None, kubeconfig_path: str = None,
                     label_selector: str = None) -> str:
     """
     列出指定命名空间中的Deployment
     
     Args:
-        namespace: Kubernetes命名空间，默认为default
+        namespace: Kubernetes命名空间，默认使用默认集群的命名空间
         kubeconfig_path: kubeconfig文件路径
         label_selector: 标签选择器
     
@@ -171,6 +196,9 @@ async def list_deployments(namespace: str = "default", kubeconfig_path: str = No
         包含Deployment列表的结果
     """
     try:
+        # 解析命名空间
+        namespace = _resolve_namespace(namespace)
+        
         k8s_service = KubernetesAPIService()
         k8s_service.load_config(kubeconfig_path=kubeconfig_path)
         
