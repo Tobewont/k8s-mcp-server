@@ -280,10 +280,10 @@ async def get_default_cluster(random_string: str = "") -> str:
                     }
                 }
         else:
-        result = {
-            "success": False,
-            "error": "未设置默认集群"
-        }
+            result = {
+                "success": False,
+                "error": "未设置默认集群"
+            }
         
         return json.dumps(result, ensure_ascii=False, indent=2)
         
