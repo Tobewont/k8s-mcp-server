@@ -59,7 +59,7 @@ class KubernetesAPIService:
                     config.load_kube_config()
             except Exception:
                 # 如果获取默认集群失败，回退到系统默认配置
-            config.load_kube_config()
+                config.load_kube_config()   
         
         # 初始化 API 客户端
         self.v1_api = client.CoreV1Api()
@@ -205,11 +205,18 @@ class KubernetesAPIService:
                 body=body
             )
             
+            # 安全地获取uid，避免details属性不存在的问题
+            uid = None
+            if hasattr(response, 'details') and response.details:
+                uid = getattr(response.details, 'uid', None)
+            elif hasattr(response, 'metadata') and response.metadata:
+                uid = getattr(response.metadata, 'uid', None)
+            
             return {
                 "name": name,
                 "namespace": namespace,
                 "status": "deleted",
-                "uid": response.details.uid if response.details else None
+                "uid": uid
             }
             
         except ApiException as e:
@@ -384,7 +391,7 @@ class KubernetesAPIService:
                     "namespace": service.metadata.namespace,
                     "type": service.spec.type,
                     "cluster_ip": service.spec.cluster_ip,
-                    "external_ips": service.spec.external_ips or [],
+                    "external_ips": getattr(service.spec, 'external_i_ps', None) or [],
                     "ports": ports,
                     "selector": service.spec.selector or {},
                     "created": service.metadata.creation_timestamp.isoformat() if service.metadata.creation_timestamp else None,
@@ -426,7 +433,7 @@ class KubernetesAPIService:
                 "spec": {
                     "type": service.spec.type,
                     "cluster_ip": service.spec.cluster_ip,
-                    "external_ips": service.spec.external_ips or [],
+                    "external_ips": getattr(service.spec, 'external_i_ps', None) or [],
                     "load_balancer_ip": service.spec.load_balancer_ip,
                     "ports": ports,
                     "selector": service.spec.selector or {},

@@ -39,14 +39,14 @@ python main.py
 python main.py --transport stdio
 
 # SSE 模式启动（支持HTTP接口）
-python main.py --transport sse --host 0.0.0.0 --port 8001
+python main.py --transport sse --host 0.0.0.0 --port 8000
 
 # 或使用 uvicorn 直接启动SSE服务
-uvicorn tools:app --host 0.0.0.0 --port 8001
+uvicorn tools:app --host 0.0.0.0 --port 8000
 ```
 
 **stdio 模式**：通过标准输入输出与 MCP 客户端通信（默认）
-**SSE 模式**：通过 Server-Sent Events 接口（`http://localhost:8001/mcp/k8s-server/sse`）提供 HTTP 服务
+**SSE 模式**：通过 Server-Sent Events 接口（`http://localhost:8000/mcp/k8s-server/sse`）提供 HTTP 服务
 
 ## 🏗️ 架构设计
 
