@@ -44,6 +44,7 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 ```
 
 **stdio 模式**：通过标准输入输出与 MCP 客户端通信（默认）
+
 **SSE 模式**：通过 Server-Sent Events 接口（`http://localhost:8000/mcp/k8s-server/sse`）提供 HTTP 服务
 
 ### 容器化部署
