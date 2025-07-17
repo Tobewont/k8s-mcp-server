@@ -112,6 +112,7 @@ logs/
 
 # 本地数据文件
 data/
+data/kubeconfigs/
 data/clusters.json
 
 # 本地配置文件
