@@ -6,7 +6,7 @@ Kubernetes MCP Server
 import asyncio
 import argparse
 import sys
-from config import SSE_HOST, SSE_PORT
+from config import SSE_HOST, SSE_PORT, LOG_LEVEL
 from mcp.server.stdio import stdio_server
 from tools import mcp
 
@@ -58,7 +58,7 @@ async def main():
                 app=app,
                 host=args.host,
                 port=args.port,
-                log_level="info"
+                log_level=LOG_LEVEL
             )
             server = uvicorn.Server(config)
             await server.serve()

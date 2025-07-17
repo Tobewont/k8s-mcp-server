@@ -14,5 +14,13 @@
     "namespace": "operation-monitor-test",
     "is_default": false,
     "description": null
+  },
+  {
+    "name": "新框架集群",
+    "kubeconfig_path": "D:\\Code\\mcp\\k8s-mcp-server\\data\\kubeconfigs\\新框架集群.yaml",
+    "service_account": "default",
+    "namespace": "default",
+    "is_default": false,
+    "description": null
   }
 ]

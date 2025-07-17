@@ -19,13 +19,17 @@ KUBECONFIGS_DIR = os.path.join(DATA_DIR, "kubeconfigs")
 os.makedirs(KUBECONFIGS_DIR, exist_ok=True)
 
 # 日志配置
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
 LOG_FILE = os.path.join(LOGS_DIR, "k8s-mcp-server.log")
 OPERATIONS_LOG_FILE = os.path.join(LOGS_DIR, "operations.log")
 
 # SSE服务器配置
 SSE_HOST = os.getenv("SSE_HOST", "0.0.0.0")
 SSE_PORT = int(os.getenv("SSE_PORT", "8000"))
+
+# MCP配置
+MCP_MESSAGE_PATH = "/mcp/k8s-server/message/"
+MCP_SSE_PATH = "/mcp/k8s-server/sse"
 
 # 环境配置文件
 ENV_FILE = ".env"

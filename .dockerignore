@@ -1,0 +1,104 @@
+# Git相关文件
+.git
+.gitignore
+.gitattributes
+
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试和覆盖率
+.coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage.*
+htmlcov/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# 文档
+docs/
+*.md
+README.md
+
+# 本地数据文件（运行时生成）
+data/
+logs/
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+.tmp/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# Docker相关
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Kubernetes配置
+k8s/
+
+# 本地配置
+config.local.py
+.env.local
+
+# 测试文件
+test_*.py
+*_test.py
+tests/
+
+# 许可证和版权文件
+LICENSE
+CHANGELOG.md
+CONTRIBUTING.md
+
+# Cursor相关
+.cursorindexingignore
+.specstory
+
+# UV锁文件
+uv.lock 
