@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-mcp-server
+  namespace: default
+  labels:
+    app: k8s-mcp-server
+    component: service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: k8s-mcp-server
+---
+# 可选：如果需要外部访问，可以创建NodePort或LoadBalancer服务
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-mcp-server-external
+  namespace: default
+  labels:
+    app: k8s-mcp-server
+    component: external-service
+spec:
+  type: NodePort
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+    nodePort: 30800  # 可以根据需要调整
+  selector:
+    app: k8s-mcp-server
+---
+# 可选：如果需要通过Ingress暴露，可以创建Ingress资源
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8s-mcp-server-ingress
+  namespace: default
+  labels:
+    app: k8s-mcp-server
+    component: ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  rules:
+  - host: k8s-mcp-server.local  # 替换为实际的域名
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: k8s-mcp-server
+            port:
+              number: 8000 

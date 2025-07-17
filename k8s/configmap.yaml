@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-mcp-server-config
+  namespace: default
+  labels:
+    app: k8s-mcp-server
+    component: config
+data:
+  # 服务配置
+  SSE_HOST: "0.0.0.0"
+  SSE_PORT: "8000"
+  
+  # 数据目录配置
+  DATA_DIR: "/app/data"
+  LOGS_DIR: "/app/logs"
+  
+  # MCP配置
+  MCP_MESSAGE_PATH: "/mcp/k8s-server/message/"
+  MCP_SSE_PATH: "/mcp/k8s-server/sse"
+
+  # 日志配置
+  LOG_LEVEL: "info"
+  LOG_FILE: "/app/logs/k8s-mcp-server.log"
+  OPERATIONS_LOG_FILE: "/app/logs/operations.log"
