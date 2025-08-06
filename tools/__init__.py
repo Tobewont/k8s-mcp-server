@@ -19,12 +19,20 @@ from . import k8s_tools
 from . import cluster_tools
 from . import config_tools
 from . import diagnostic_tools
+from . import batch_tools
+from . import backup_tools
+from . import rbac_tools
+from . import validation_tools
 
 __all__ = [
     'k8s_tools',
     'cluster_tools', 
     'config_tools',
     'diagnostic_tools',
+    'batch_tools',
+    'backup_tools',
+    'rbac_tools',
+    'validation_tools',
     'mcp',
     'app'
 ]

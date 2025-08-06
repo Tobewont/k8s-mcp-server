@@ -884,6 +884,52 @@ async def create_service(name: str, selector: dict, ports: list, namespace: str 
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
+async def update_service(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                  service_type: str = None, ports: str = None, selector: str = None,
+                  labels: str = None, annotations: str = None) -> str:
+    """
+    更新Service
+    
+    Args:
+        name: Service名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        service_type: 服务类型 (ClusterIP, NodePort, LoadBalancer)
+        ports: JSON格式的端口列表
+        selector: JSON格式的选择器
+        labels: JSON格式的标签
+        annotations: JSON格式的注解
+    
+    Returns:
+        包含更新结果的JSON字符串
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        # 解析JSON参数
+        ports_list = json.loads(ports) if ports else None
+        selector_dict = json.loads(selector) if selector else None
+        labels_dict = json.loads(labels) if labels else None
+        annotations_dict = json.loads(annotations) if annotations else None
+        
+        result = await k8s_service.update_service(
+            name=name,
+            namespace=namespace,
+            service_type=service_type,
+            ports=ports_list,
+            selector=selector_dict,
+            labels=labels_dict,
+            annotations=annotations_dict
+        )
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
 async def delete_service(name: str, namespace: str = "default", kubeconfig_path: str = None) -> str:
     """
     删除Service

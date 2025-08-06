@@ -15,6 +15,10 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 CLUSTERS_CONFIG_FILE = os.path.join(DATA_DIR, "clusters.json")
 KUBECONFIGS_DIR = os.path.join(DATA_DIR, "kubeconfigs")
 
+# 备份目录名称
+BACKUP_DIR_NAME = "backup"
+BACKUP_DIR = os.path.join(DATA_DIR, BACKUP_DIR_NAME)
+
 # 确保kubeconfigs目录存在
 os.makedirs(KUBECONFIGS_DIR, exist_ok=True)
 
