@@ -7,7 +7,7 @@
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
-- **全面的 K8s 操作**：支持 84 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **全面的 K8s 操作**：支持 125+ 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
 - **双重传输协议**：同时支持 SSE 和 stdio 两种传输方式
@@ -71,13 +71,18 @@ kubectl apply -f k8s/
 k8s-mcp-server/
 ├── services/
 │   ├── __init__.py
-│   └── k8s_api_service.py       # Kubernetes API 服务层
+│   ├── k8s_api_service.py       # Kubernetes API 服务层
+│   └── k8s_advanced_service.py  # Kubernetes 进阶服务层（批量操作、备份恢复、RBAC、验证）
 ├── tools/
 │   ├── __init__.py              # FastMCP 实例和工具模块导入
 │   ├── k8s_tools.py             # 核心 K8s 资源管理工具
 │   ├── cluster_tools.py         # 多集群配置管理
 │   ├── config_tools.py          # kubeconfig 文件管理
-│   └── diagnostic_tools.py      # 集群诊断工具
+│   ├── diagnostic_tools.py      # 集群诊断工具
+│   ├── batch_tools.py           # 批量操作工具
+│   ├── backup_tools.py          # 备份恢复工具
+│   ├── rbac_tools.py            # RBAC管理工具
+│   └── validation_tools.py      # 资源操作验证工具
 ├── utils/
 │   ├── __init__.py
 │   ├── cluster_config.py        # 集群配置管理类
@@ -145,6 +150,7 @@ k8s-mcp-server/
 - `list_services()` - 列出 Service
 - `describe_service()` - 获取 Service 详细信息
 - `create_service()` - 创建 Service
+- `update_service()` - 更新 Service
 - `delete_service()` - 删除 Service
 
 #### ConfigMap 管理
@@ -238,12 +244,125 @@ k8s-mcp-server/
 - `check_resource_usage()` - 检查资源使用情况
 - `get_cluster_events()` - 获取集群事件
 
+### 批量操作工具 (batch_tools.py)
+
+- `batch_create_resources()` - 批量创建资源
+- `batch_update_resources()` - 批量更新资源
+- `batch_delete_resources()` - 批量删除资源
+
+### 备份和恢复工具 (backup_tools.py)
+
+- `backup_namespace()` - 备份整个命名空间
+- `backup_resource()` - 备份特定资源
+- `restore_from_backup()` - 从备份恢复资源
+- `list_backups()` - 列出备份文件
+
+### RBAC管理工具 (rbac_tools.py)
+
+#### ServiceAccount 管理
+- `list_serviceaccounts()` - 列出命名空间中的ServiceAccount
+- `describe_serviceaccount()` - 获取ServiceAccount详情
+- `create_serviceaccount()` - 创建ServiceAccount
+- `update_serviceaccount()` - 更新ServiceAccount
+- `delete_serviceaccount()` - 删除ServiceAccount
+
+#### Role 管理
+- `list_roles()` - 列出命名空间中的Role
+- `describe_role()` - 获取Role详情
+- `create_role()` - 创建Role
+- `update_role()` - 更新Role
+- `delete_role()` - 删除Role
+
+#### ClusterRole 管理
+- `list_cluster_roles()` - 列出ClusterRole
+- `describe_cluster_role()` - 获取ClusterRole详情
+- `create_cluster_role()` - 创建ClusterRole
+- `delete_cluster_role()` - 删除ClusterRole
+
+#### RoleBinding 管理
+- `list_role_bindings()` - 列出命名空间中的RoleBinding
+- `describe_role_binding()` - 获取RoleBinding详情
+- `create_role_binding()` - 创建RoleBinding
+- `delete_role_binding()` - 删除RoleBinding
+
+#### ClusterRoleBinding 管理
+- `list_cluster_role_bindings()` - 列出ClusterRoleBinding
+- `describe_cluster_role_binding()` - 获取ClusterRoleBinding详情
+- `create_cluster_role_binding()` - 创建ClusterRoleBinding
+- `delete_cluster_role_binding()` - 删除ClusterRoleBinding
+
+#### 角色模板
+- `create_developer_role_template()` - 创建开发者角色模板
+- `create_admin_role_template()` - 创建管理员角色模板
+- `create_operator_role_template()` - 创建运维角色模板
+
+#### 用户绑定
+- `bind_user_to_role()` - 将用户绑定到角色
+- `bind_user_to_cluster_role()` - 将用户绑定到集群角色
+
+### 资源操作验证工具 (validation_tools.py)
+
+提供操作前后的对比和验证功能，支持预览变更效果，涵盖所有主要 Kubernetes 资源类型：
+
+#### 工作负载验证
+- `validate_deployment_update()` - 验证Deployment更新操作
+- `preview_deployment_changes()` - 预览Deployment变更效果
+- `validate_statefulset_update()` - 验证StatefulSet更新操作
+- `preview_statefulset_changes()` - 预览StatefulSet变更效果
+- `validate_daemonset_update()` - 验证DaemonSet更新操作
+- `preview_daemonset_changes()` - 预览DaemonSet变更效果
+- `validate_job_update()` - 验证Job更新操作
+- `preview_job_changes()` - 预览Job变更效果
+- `validate_cronjob_update()` - 验证CronJob更新操作
+- `preview_cronjob_changes()` - 预览CronJob变更效果
+
+#### 网络和配置验证
+- `validate_service_update()` - 验证Service更新操作
+- `preview_service_changes()` - 预览Service变更效果
+- `validate_ingress_update()` - 验证Ingress更新操作
+- `preview_ingress_changes()` - 预览Ingress变更效果
+- `validate_configmap_update()` - 验证ConfigMap更新操作
+- `preview_configmap_changes()` - 预览ConfigMap变更效果
+- `validate_secret_update()` - 验证Secret更新操作
+- `preview_secret_changes()` - 预览Secret变更效果
+
+#### 存储验证
+- `validate_storageclass_update()` - 验证StorageClass更新操作
+- `preview_storageclass_changes()` - 预览StorageClass变更效果
+- `validate_persistentvolume_update()` - 验证PersistentVolume更新操作
+- `preview_persistentvolume_changes()` - 预览PersistentVolume变更效果
+- `validate_persistentvolumeclaim_update()` - 验证PVC更新操作
+- `preview_persistentvolumeclaim_changes()` - 预览PVC变更效果
+
+#### RBAC验证
+- `validate_serviceaccount_update()` - 验证ServiceAccount更新操作
+- `preview_serviceaccount_changes()` - 预览ServiceAccount变更效果
+- `validate_role_update()` - 验证Role更新操作
+- `preview_role_changes()` - 预览Role变更效果
+- `validate_clusterrole_update()` - 验证ClusterRole更新操作
+- `preview_clusterrole_changes()` - 预览ClusterRole变更效果
+- `validate_rolebinding_update()` - 验证RoleBinding更新操作
+- `preview_rolebinding_changes()` - 预览RoleBinding变更效果
+- `validate_clusterrolebinding_update()` - 验证ClusterRoleBinding更新操作
+- `preview_clusterrolebinding_changes()` - 预览ClusterRoleBinding变更效果
+
+#### 命名空间验证
+- `validate_namespace_update()` - 验证Namespace更新操作
+- `preview_namespace_changes()` - 预览Namespace变更效果
+
+#### 通用工具
+- `get_resource_changes()` - 获取资源的变化对比
+
 ### 🔥 特殊功能
 
 - **优雅删除**：部分删除函数支持 `grace_period_seconds` 参数，实现优雅或强制删除
 - **批量操作**：所有列表函数支持 `label_selector` 参数进行筛选
 - **数据持久化**：支持配置和数据的持久化存储
 - **健康检查**：提供容器健康检查端点
+- **批量资源操作**：支持批量创建、更新、删除多个资源，支持事务回滚
+- **备份恢复**：支持命名空间和单个资源的备份恢复，按集群/命名空间/资源类型层级存储
+- **RBAC管理**：完整的角色和权限管理，支持角色模板和用户绑定
+- **操作验证**：提供操作前后的对比和验证，支持预览变更效果
 
 ## 📝 使用示例
 
@@ -297,6 +416,60 @@ k8s-mcp-server/
     "arguments": {
       "name": "my-app",
       "image": "nginx:latest",
+      "replicas": 3,
+      "namespace": "default"
+    }
+  }
+}
+
+// 批量创建资源
+{
+  "method": "tools/call",
+  "params": {
+    "name": "batch_create_resources",
+    "arguments": {
+      "resources": "[{\"kind\": \"Deployment\", \"metadata\": {\"name\": \"app1\"}, \"spec\": {\"name\": \"app1\", \"image\": \"nginx:latest\", \"replicas\": 3}}, {\"kind\": \"Service\", \"metadata\": {\"name\": \"app1-svc\"}, \"spec\": {\"name\": \"app1-svc\", \"selector\": {\"app\": \"app1\"}, \"ports\": [{\"port\": 80}]}}]",
+      "namespace": "default"
+    }
+  }
+}
+
+// 备份命名空间
+{
+  "method": "tools/call",
+  "params": {
+    "name": "backup_namespace",
+    "arguments": {
+      "namespace": "my-app",
+      "include_secrets": true
+    }
+  }
+}
+
+// 创建开发者角色
+{
+  "method": "tools/call",
+  "params": {
+    "name": "create_developer_role_template",
+    "arguments": {
+      "namespace": "my-app",
+      "role_name": "developer"
+    }
+  }
+}
+
+// 验证Deployment扩缩容
+{
+  "method": "tools/call",
+  "params": {
+    "name": "validate_deployment_scaling",
+    "arguments": {
+      "name": "my-app",
+      "namespace": "default",
+      "new_replicas": 5
+    }
+  }
+}
       "replicas": 3,
       "namespace": "default"
     }
