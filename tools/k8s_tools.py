@@ -1442,6 +1442,45 @@ async def create_job(name: str, image: str, namespace: str = "default",
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
+async def update_job(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                    labels: dict = None, annotations: dict = None) -> str:
+    """
+    更新Job（仅支持labels和annotations，因为Job的spec字段大多不可变）
+    
+    Args:
+        name: Job名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        labels: 新的标签字典
+        annotations: 新的注解字典
+    
+    Returns:
+        更新结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        update_result = await k8s_service.update_job(
+            name=name,
+            namespace=namespace,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"Job '{name}' 更新成功",
+            "result": update_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
 async def delete_job(name: str, namespace: str = "default", kubeconfig_path: str = None) -> str:
     """
     删除Job
@@ -2451,6 +2490,912 @@ async def delete_persistentvolumeclaim(name: str, namespace: str = "default", ku
     except Exception as e:
         error_result = {"success": False, "error": str(e)}
         return json.dumps(error_result, ensure_ascii=False, indent=2) 
+
+# ========================== ServiceAccount Tools ==========================
+
+@mcp.tool()
+async def list_serviceaccounts(namespace: str = "default", kubeconfig_path: str = None) -> str:
+    """
+    列出命名空间中的ServiceAccount
+    
+    Args:
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        包含ServiceAccount列表的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        serviceaccounts = await k8s_service.list_serviceaccounts(namespace=namespace)
+        
+        result = {
+            "success": True,
+            "serviceaccounts": serviceaccounts,
+            "count": len(serviceaccounts),
+            "namespace": namespace
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def describe_serviceaccount(name: str, namespace: str = "default", kubeconfig_path: str = None) -> str:
+    """
+    获取ServiceAccount详情
+    
+    Args:
+        name: ServiceAccount名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        包含ServiceAccount详细信息的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        serviceaccount_details = await k8s_service.get_serviceaccount(name=name, namespace=namespace)
+        
+        result = {
+            "success": True,
+            "serviceaccount": serviceaccount_details
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def create_serviceaccount(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                          labels: dict = None, annotations: dict = None,
+                          secrets: list = None, image_pull_secrets: list = None,
+                          automount_service_account_token: bool = None) -> str:
+    """
+    创建ServiceAccount
+    
+    Args:
+        name: ServiceAccount名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        labels: 标签字典
+        annotations: 注解字典
+        secrets: 关联的secrets列表
+        image_pull_secrets: 镜像拉取secrets列表
+        automount_service_account_token: 是否自动挂载服务账户令牌
+    
+    Returns:
+        创建结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        create_result = await k8s_service.create_serviceaccount(
+            name=name,
+            namespace=namespace,
+            labels=labels,
+            annotations=annotations,
+            secrets=secrets,
+            image_pull_secrets=image_pull_secrets,
+            automount_service_account_token=automount_service_account_token
+        )
+        
+        result = {
+            "success": True,
+            "message": f"ServiceAccount '{name}' 创建成功",
+            "result": create_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def update_serviceaccount(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                          labels: dict = None, annotations: dict = None,
+                          secrets: list = None, image_pull_secrets: list = None,
+                          automount_service_account_token: bool = None) -> str:
+    """
+    更新ServiceAccount
+    
+    Args:
+        name: ServiceAccount名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        labels: 新的标签字典
+        annotations: 新的注解字典
+        secrets: 新的关联secrets列表
+        image_pull_secrets: 新的镜像拉取secrets列表
+        automount_service_account_token: 是否自动挂载服务账户令牌
+    
+    Returns:
+        更新结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        update_result = await k8s_service.update_serviceaccount(
+            name=name,
+            namespace=namespace,
+            labels=labels,
+            annotations=annotations,
+            secrets=secrets,
+            image_pull_secrets=image_pull_secrets,
+            automount_service_account_token=automount_service_account_token
+        )
+        
+        result = {
+            "success": True,
+            "message": f"ServiceAccount '{name}' 更新成功",
+            "result": update_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def delete_serviceaccount(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                          grace_period_seconds: int = None) -> str:
+    """
+    删除ServiceAccount
+    
+    Args:
+        name: ServiceAccount名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        grace_period_seconds: 优雅删除时间（秒）
+    
+    Returns:
+        删除结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        delete_result = await k8s_service.delete_serviceaccount(
+            name=name,
+            namespace=namespace,
+            grace_period_seconds=grace_period_seconds
+        )
+        
+        result = {
+            "success": True,
+            "message": f"ServiceAccount '{name}' 删除成功",
+            "result": delete_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+# ========================== Role Tools ==========================
+
+@mcp.tool()
+async def list_roles(namespace: str = "default", kubeconfig_path: str = None,
+                     label_selector: str = None) -> str:
+    """
+    列出命名空间中的Role
+    
+    Args:
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        label_selector: 标签选择器
+    
+    Returns:
+        包含Role列表的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        roles = await k8s_service.list_roles(
+            namespace=namespace,
+            label_selector=label_selector
+        )
+        
+        result = {
+            "success": True,
+            "roles": roles,
+            "count": len(roles),
+            "namespace": namespace
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def describe_role(name: str, namespace: str = "default", kubeconfig_path: str = None) -> str:
+    """
+    获取Role详情
+    
+    Args:
+        name: Role名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        包含Role详细信息的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        role_details = await k8s_service.get_role(name=name, namespace=namespace)
+        
+        result = {
+            "success": True,
+            "role": role_details
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def create_role(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                      rules: list = None, labels: dict = None, annotations: dict = None) -> str:
+    """
+    创建Role
+    
+    Args:
+        name: Role名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        rules: 规则列表，格式如 [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]}]
+        labels: 标签字典
+        annotations: 注解字典
+    
+    Returns:
+        创建结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        create_result = await k8s_service.create_role(
+            name=name,
+            namespace=namespace,
+            rules=rules,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"Role '{name}' 创建成功",
+            "result": create_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def update_role(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                      rules: list = None, labels: dict = None, annotations: dict = None) -> str:
+    """
+    更新Role
+    
+    Args:
+        name: Role名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        rules: 新的规则列表
+        labels: 新的标签字典
+        annotations: 新的注解字典
+    
+    Returns:
+        更新结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        update_result = await k8s_service.update_role(
+            name=name,
+            namespace=namespace,
+            rules=rules,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"Role '{name}' 更新成功",
+            "result": update_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def delete_role(name: str, namespace: str = "default", kubeconfig_path: str = None) -> str:
+    """
+    删除Role
+    
+    Args:
+        name: Role名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        删除结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        delete_result = await k8s_service.delete_role(name=name, namespace=namespace)
+        
+        result = {
+            "success": True,
+            "message": f"Role '{name}' 删除成功",
+            "result": delete_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+# ========================== ClusterRole Tools ==========================
+
+@mcp.tool()
+async def list_cluster_roles(kubeconfig_path: str = None, label_selector: str = None) -> str:
+    """
+    列出ClusterRole
+    
+    Args:
+        kubeconfig_path: kubeconfig文件路径
+        label_selector: 标签选择器
+    
+    Returns:
+        包含ClusterRole列表的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        cluster_roles = await k8s_service.list_cluster_roles(label_selector=label_selector)
+        
+        result = {
+            "success": True,
+            "cluster_roles": cluster_roles,
+            "count": len(cluster_roles)
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def describe_cluster_role(name: str, kubeconfig_path: str = None) -> str:
+    """
+    获取ClusterRole详情
+    
+    Args:
+        name: ClusterRole名称
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        包含ClusterRole详细信息的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        cluster_role_details = await k8s_service.get_cluster_role(name=name)
+        
+        result = {
+            "success": True,
+            "cluster_role": cluster_role_details
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def create_cluster_role(name: str, kubeconfig_path: str = None,
+                             rules: list = None, labels: dict = None, annotations: dict = None) -> str:
+    """
+    创建ClusterRole
+    
+    Args:
+        name: ClusterRole名称
+        kubeconfig_path: kubeconfig文件路径
+        rules: 规则列表，格式如 [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]}]
+        labels: 标签字典
+        annotations: 注解字典
+    
+    Returns:
+        创建结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        create_result = await k8s_service.create_cluster_role(
+            name=name,
+            rules=rules,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"ClusterRole '{name}' 创建成功",
+            "result": create_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def update_cluster_role(name: str, kubeconfig_path: str = None,
+                             rules: list = None, labels: dict = None, annotations: dict = None) -> str:
+    """
+    更新ClusterRole
+    
+    Args:
+        name: ClusterRole名称
+        kubeconfig_path: kubeconfig文件路径
+        rules: 新的规则列表
+        labels: 新的标签字典
+        annotations: 新的注解字典
+    
+    Returns:
+        更新结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        update_result = await k8s_service.update_cluster_role(
+            name=name,
+            rules=rules,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"ClusterRole '{name}' 更新成功",
+            "result": update_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def delete_cluster_role(name: str, kubeconfig_path: str = None) -> str:
+    """
+    删除ClusterRole
+    
+    Args:
+        name: ClusterRole名称
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        删除结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        delete_result = await k8s_service.delete_cluster_role(name=name)
+        
+        result = {
+            "success": True,
+            "message": f"ClusterRole '{name}' 删除成功",
+            "result": delete_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+# ========================== RoleBinding Tools ==========================
+
+@mcp.tool()
+async def list_role_bindings(namespace: str = "default", kubeconfig_path: str = None,
+                            label_selector: str = None) -> str:
+    """
+    列出命名空间中的RoleBinding
+    
+    Args:
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        label_selector: 标签选择器
+    
+    Returns:
+        包含RoleBinding列表的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        role_bindings = await k8s_service.list_role_bindings(
+            namespace=namespace,
+            label_selector=label_selector
+        )
+        
+        result = {
+            "success": True,
+            "role_bindings": role_bindings,
+            "count": len(role_bindings),
+            "namespace": namespace
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def describe_role_binding(name: str, namespace: str = "default", kubeconfig_path: str = None) -> str:
+    """
+    获取RoleBinding详情
+    
+    Args:
+        name: RoleBinding名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        包含RoleBinding详细信息的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        role_binding_details = await k8s_service.get_role_binding(name=name, namespace=namespace)
+        
+        result = {
+            "success": True,
+            "role_binding": role_binding_details
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def create_role_binding(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                             role_ref: dict = None, subjects: list = None,
+                             labels: dict = None, annotations: dict = None) -> str:
+    """
+    创建RoleBinding
+    
+    Args:
+        name: RoleBinding名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        role_ref: 角色引用，格式如 {"kind": "Role", "name": "pod-reader", "apiGroup": "rbac.authorization.k8s.io"}
+        subjects: 主体列表，格式如 [{"kind": "User", "name": "jane", "apiGroup": "rbac.authorization.k8s.io"}]
+        labels: 标签字典
+        annotations: 注解字典
+    
+    Returns:
+        创建结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        create_result = await k8s_service.create_role_binding(
+            name=name,
+            namespace=namespace,
+            role_ref=role_ref,
+            subjects=subjects,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"RoleBinding '{name}' 创建成功",
+            "result": create_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def update_role_binding(name: str, namespace: str = "default", kubeconfig_path: str = None,
+                             role_ref: dict = None, subjects: list = None,
+                             labels: dict = None, annotations: dict = None) -> str:
+    """
+    更新RoleBinding
+    
+    Args:
+        name: RoleBinding名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+        role_ref: 新的角色引用
+        subjects: 新的主体列表
+        labels: 新的标签字典
+        annotations: 新的注解字典
+    
+    Returns:
+        更新结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        update_result = await k8s_service.update_role_binding(
+            name=name,
+            namespace=namespace,
+            role_ref=role_ref,
+            subjects=subjects,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"RoleBinding '{name}' 更新成功",
+            "result": update_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def delete_role_binding(name: str, namespace: str = "default", kubeconfig_path: str = None) -> str:
+    """
+    删除RoleBinding
+    
+    Args:
+        name: RoleBinding名称
+        namespace: Kubernetes命名空间，默认为default
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        删除结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        delete_result = await k8s_service.delete_role_binding(name=name, namespace=namespace)
+        
+        result = {
+            "success": True,
+            "message": f"RoleBinding '{name}' 删除成功",
+            "result": delete_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+# ========================== ClusterRoleBinding Tools ==========================
+
+@mcp.tool()
+async def list_cluster_role_bindings(kubeconfig_path: str = None, label_selector: str = None) -> str:
+    """
+    列出ClusterRoleBinding
+    
+    Args:
+        kubeconfig_path: kubeconfig文件路径
+        label_selector: 标签选择器
+    
+    Returns:
+        包含ClusterRoleBinding列表的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        cluster_role_bindings = await k8s_service.list_cluster_role_bindings(label_selector=label_selector)
+        
+        result = {
+            "success": True,
+            "cluster_role_bindings": cluster_role_bindings,
+            "count": len(cluster_role_bindings)
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def describe_cluster_role_binding(name: str, kubeconfig_path: str = None) -> str:
+    """
+    获取ClusterRoleBinding详情
+    
+    Args:
+        name: ClusterRoleBinding名称
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        包含ClusterRoleBinding详细信息的结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        cluster_role_binding_details = await k8s_service.get_cluster_role_binding(name=name)
+        
+        result = {
+            "success": True,
+            "cluster_role_binding": cluster_role_binding_details
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def create_cluster_role_binding(name: str, kubeconfig_path: str = None,
+                                     role_ref: dict = None, subjects: list = None,
+                                     labels: dict = None, annotations: dict = None) -> str:
+    """
+    创建ClusterRoleBinding
+    
+    Args:
+        name: ClusterRoleBinding名称
+        kubeconfig_path: kubeconfig文件路径
+        role_ref: 角色引用，格式如 {"kind": "ClusterRole", "name": "cluster-admin", "apiGroup": "rbac.authorization.k8s.io"}
+        subjects: 主体列表，格式如 [{"kind": "User", "name": "admin", "apiGroup": "rbac.authorization.k8s.io"}]
+        labels: 标签字典
+        annotations: 注解字典
+    
+    Returns:
+        创建结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        create_result = await k8s_service.create_cluster_role_binding(
+            name=name,
+            role_ref=role_ref,
+            subjects=subjects,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"ClusterRoleBinding '{name}' 创建成功",
+            "result": create_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def update_cluster_role_binding(name: str, kubeconfig_path: str = None,
+                                     role_ref: dict = None, subjects: list = None,
+                                     labels: dict = None, annotations: dict = None) -> str:
+    """
+    更新ClusterRoleBinding
+    
+    Args:
+        name: ClusterRoleBinding名称
+        kubeconfig_path: kubeconfig文件路径
+        role_ref: 新的角色引用
+        subjects: 新的主体列表
+        labels: 新的标签字典
+        annotations: 新的注解字典
+    
+    Returns:
+        更新结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        update_result = await k8s_service.update_cluster_role_binding(
+            name=name,
+            role_ref=role_ref,
+            subjects=subjects,
+            labels=labels,
+            annotations=annotations
+        )
+        
+        result = {
+            "success": True,
+            "message": f"ClusterRoleBinding '{name}' 更新成功",
+            "result": update_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
+async def delete_cluster_role_binding(name: str, kubeconfig_path: str = None) -> str:
+    """
+    删除ClusterRoleBinding
+    
+    Args:
+        name: ClusterRoleBinding名称
+        kubeconfig_path: kubeconfig文件路径
+    
+    Returns:
+        删除结果
+    """
+    try:
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        delete_result = await k8s_service.delete_cluster_role_binding(name=name)
+        
+        result = {
+            "success": True,
+            "message": f"ClusterRoleBinding '{name}' 删除成功",
+            "result": delete_result
+        }
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 # ========================== Node Tools ==========================
 

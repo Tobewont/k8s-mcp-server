@@ -324,11 +324,31 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 Deployment 详情失败: {e.reason}")
 
-    async def create_deployment(self, name: str, image: str, namespace: str = "default",
+    async def create_deployment(self, name: str = None, image: str = None, namespace: str = "default",
                           replicas: int = 1, labels: dict = None, env_vars: dict = None,
-                          ports: list = None, resources: dict = None) -> Dict[str, Any]:
+                          ports: list = None, resources: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Deployment"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                # 创建 Deployment
+                response = self.apps_v1_api.create_namespaced_deployment(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "replicas": response.spec.replicas
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not image:
+                raise ValueError("name和image参数是必需的")
+            
             if labels is None:
                 labels = {"app": name}
             
@@ -407,62 +427,78 @@ class KubernetesAPIService:
     async def update_deployment(self, name: str, namespace: str = "default",
                           image: str = None, replicas: int = None,
                           labels: dict = None, env_vars: dict = None,
-                          resources: dict = None) -> Dict[str, Any]:
+                          resources: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Deployment"""
         try:
-            # 获取当前 deployment
-            deployment = self.apps_v1_api.read_namespaced_deployment(
-                name=name, namespace=namespace
-            )
-            
-            # 更新镜像
-            if image is not None:
-                deployment.spec.template.spec.containers[0].image = image
-            
-            # 更新副本数
-            if replicas is not None:
-                deployment.spec.replicas = replicas
-
-            # 更新标签
-            if labels is not None:
-                if deployment.metadata.labels:
-                    deployment.metadata.labels.update(labels)
-                else:
-                    deployment.metadata.labels = labels
-                # 同时更新 Pod 模板的标签
-                if deployment.spec.template.metadata.labels:
-                    deployment.spec.template.metadata.labels.update(labels)
-                else:
-                    deployment.spec.template.metadata.labels = labels
-            
-            # 更新环境变量
-            if env_vars is not None:
-                env_list = []
-                for key, value in env_vars.items():
-                    env_list.append(client.V1EnvVar(name=key, value=str(value)))
-                deployment.spec.template.spec.containers[0].env = env_list
-            
-            # 更新资源限制
-            if resources is not None:
-                resource_requirements = client.V1ResourceRequirements(
-                    requests=resources.get("requests"),
-                    limits=resources.get("limits")
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.apps_v1_api.patch_namespaced_deployment(
+                    name=name,
+                    namespace=namespace,
+                    body=body
                 )
-                deployment.spec.template.spec.containers[0].resources = resource_requirements
-            
-            # 应用更新
-            updated_deployment = self.apps_v1_api.patch_namespaced_deployment(
-                name=name,
-                namespace=namespace,
-                body=deployment
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取当前 deployment
+                deployment = self.apps_v1_api.read_namespaced_deployment(
+                    name=name, namespace=namespace
+                )
+                
+                # 更新镜像
+                if image is not None:
+                    deployment.spec.template.spec.containers[0].image = image
+                
+                # 更新副本数
+                if replicas is not None:
+                    deployment.spec.replicas = replicas
+
+                # 更新标签
+                if labels is not None:
+                    if deployment.metadata.labels:
+                        deployment.metadata.labels.update(labels)
+                    else:
+                        deployment.metadata.labels = labels
+                    # 同时更新 Pod 模板的标签
+                    if deployment.spec.template.metadata.labels:
+                        deployment.spec.template.metadata.labels.update(labels)
+                    else:
+                        deployment.spec.template.metadata.labels = labels
+                
+                # 更新环境变量
+                if env_vars is not None:
+                    env_list = []
+                    for key, value in env_vars.items():
+                        env_list.append(client.V1EnvVar(name=key, value=str(value)))
+                    deployment.spec.template.spec.containers[0].env = env_list
+                
+                # 更新资源限制
+                if resources is not None:
+                    resource_requirements = client.V1ResourceRequirements(
+                        requests=resources.get("requests"),
+                        limits=resources.get("limits")
+                    )
+                    deployment.spec.template.spec.containers[0].resources = resource_requirements
+                
+                # 应用更新
+                response = self.apps_v1_api.patch_namespaced_deployment(
+                    name=name,
+                    namespace=namespace,
+                    body=deployment
             )
             
             return {
-                "name": updated_deployment.metadata.name,
-                "namespace": updated_deployment.metadata.namespace,
-                "uid": updated_deployment.metadata.uid,
-                "replicas": updated_deployment.spec.replicas,
-                "image": updated_deployment.spec.template.spec.containers[0].image,
+                "name": response.metadata.name,
+                "namespace": response.metadata.namespace,
+                "uid": response.metadata.uid,
+                "replicas": response.spec.replicas,
+                "image": response.spec.template.spec.containers[0].image,
                 "status": "updated"
             }
             
@@ -590,12 +626,31 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 StatefulSet 失败: {e}")
 
-    async def create_statefulset(self, name: str, image: str, namespace: str = "default",
+    async def create_statefulset(self, name: str = None, image: str = None, namespace: str = "default",
                            replicas: int = 1, labels: dict = None, env_vars: dict = None,
                            ports: list = None, resources: dict = None,
-                           volume_claims: list = None) -> Dict[str, Any]:
+                           volume_claims: list = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 StatefulSet"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.apps_v1_api.create_namespaced_stateful_set(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "replicas": response.spec.replicas
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not image:
+                raise ValueError("name和image参数是必需的")
+            
             if labels is None:
                 labels = {"app": name}
             
@@ -692,41 +747,57 @@ class KubernetesAPIService:
 
     async def update_statefulset(self, name: str, namespace: str = "default",
                            image: str = None, replicas: int = None,
-                           labels: dict = None, env_vars: dict = None) -> Dict[str, Any]:
+                           labels: dict = None, env_vars: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 StatefulSet"""
         try:
-            # 获取现有的 StatefulSet
-            statefulset = self.apps_v1_api.read_namespaced_stateful_set(
-                name=name,
-                namespace=namespace
-            )
-            
-            # 更新副本数
-            if replicas is not None:
-                statefulset.spec.replicas = replicas
-            
-            # 更新镜像
-            if image is not None:
-                statefulset.spec.template.spec.containers[0].image = image
-            
-            # 更新标签
-            if labels is not None:
-                statefulset.metadata.labels.update(labels)
-                statefulset.spec.template.metadata.labels.update(labels)
-            
-            # 更新环境变量
-            if env_vars is not None:
-                env_list = []
-                for key, value in env_vars.items():
-                    env_list.append(client.V1EnvVar(name=key, value=str(value)))
-                statefulset.spec.template.spec.containers[0].env = env_list
-            
-            # 应用更新
-            response = self.apps_v1_api.patch_namespaced_stateful_set(
-                name=name,
-                namespace=namespace,
-                body=statefulset
-            )
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.apps_v1_api.patch_namespaced_stateful_set(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 StatefulSet
+                statefulset = self.apps_v1_api.read_namespaced_stateful_set(
+                    name=name,
+                    namespace=namespace
+                )
+                
+                # 更新副本数
+                if replicas is not None:
+                    statefulset.spec.replicas = replicas
+                
+                # 更新镜像
+                if image is not None:
+                    statefulset.spec.template.spec.containers[0].image = image
+                
+                # 更新标签
+                if labels is not None:
+                    statefulset.metadata.labels.update(labels)
+                    statefulset.spec.template.metadata.labels.update(labels)
+                
+                # 更新环境变量
+                if env_vars is not None:
+                    env_list = []
+                    for key, value in env_vars.items():
+                        env_list.append(client.V1EnvVar(name=key, value=str(value)))
+                    statefulset.spec.template.spec.containers[0].env = env_list
+                
+                # 应用更新
+                response = self.apps_v1_api.patch_namespaced_stateful_set(
+                    name=name,
+                    namespace=namespace,
+                    body=statefulset
+                )
             
             return {
                 "name": response.metadata.name,
@@ -858,12 +929,30 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 DaemonSet 失败: {e}")
 
-    async def create_daemonset(self, name: str, image: str, namespace: str = "default",
+    async def create_daemonset(self, name: str = None, image: str = None, namespace: str = "default",
                          labels: dict = None, env_vars: dict = None,
                          ports: list = None, resources: dict = None,
-                         volumes: list = None) -> Dict[str, Any]:
+                         volumes: list = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 DaemonSet"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.apps_v1_api.create_namespaced_daemon_set(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not image:
+                raise ValueError("name和image参数是必需的")
+            
             if labels is None:
                 labels = {"app": name}
             
@@ -962,37 +1051,53 @@ class KubernetesAPIService:
 
     async def update_daemonset(self, name: str, namespace: str = "default",
                          image: str = None, labels: dict = None,
-                         env_vars: dict = None) -> Dict[str, Any]:
+                         env_vars: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 DaemonSet"""
         try:
-            # 获取现有的 DaemonSet
-            daemonset = self.apps_v1_api.read_namespaced_daemon_set(
-                name=name,
-                namespace=namespace
-            )
-            
-            # 更新镜像
-            if image is not None:
-                daemonset.spec.template.spec.containers[0].image = image
-            
-            # 更新标签
-            if labels is not None:
-                daemonset.metadata.labels.update(labels)
-                daemonset.spec.template.metadata.labels.update(labels)
-            
-            # 更新环境变量
-            if env_vars is not None:
-                env_list = []
-                for key, value in env_vars.items():
-                    env_list.append(client.V1EnvVar(name=key, value=str(value)))
-                daemonset.spec.template.spec.containers[0].env = env_list
-            
-            # 应用更新
-            response = self.apps_v1_api.patch_namespaced_daemon_set(
-                name=name,
-                namespace=namespace,
-                body=daemonset
-            )
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.apps_v1_api.patch_namespaced_daemon_set(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 DaemonSet
+                daemonset = self.apps_v1_api.read_namespaced_daemon_set(
+                    name=name,
+                    namespace=namespace
+                )
+                
+                # 更新镜像
+                if image is not None:
+                    daemonset.spec.template.spec.containers[0].image = image
+                
+                # 更新标签
+                if labels is not None:
+                    daemonset.metadata.labels.update(labels)
+                    daemonset.spec.template.metadata.labels.update(labels)
+                
+                # 更新环境变量
+                if env_vars is not None:
+                    env_list = []
+                    for key, value in env_vars.items():
+                        env_list.append(client.V1EnvVar(name=key, value=str(value)))
+                    daemonset.spec.template.spec.containers[0].env = env_list
+                
+                # 应用更新
+                response = self.apps_v1_api.patch_namespaced_daemon_set(
+                    name=name,
+                    namespace=namespace,
+                    body=daemonset
+                )
             
             return {
                 "name": response.metadata.name,
@@ -1127,10 +1232,31 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 Service 详情失败: {e.reason}")
 
-    async def create_service(self, name: str, selector: dict, ports: list,
-                       namespace: str = "default", service_type: str = "ClusterIP") -> Dict[str, Any]:
+    async def create_service(self, name: str = None, selector: dict = None, ports: list = None,
+                       namespace: str = "default", service_type: str = "ClusterIP", resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Service"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                # 创建 Service
+                response = self.v1_api.create_namespaced_service(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "type": response.spec.type,
+                    "cluster_ip": response.spec.cluster_ip
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not selector or not ports:
+                raise ValueError("name、selector和ports参数是必需的")
+            
             # 构建端口规格
             service_ports = []
             for port in ports:
@@ -1179,7 +1305,7 @@ class KubernetesAPIService:
     async def update_service(self, name: str, namespace: str = "default",
                        service_type: str = None, ports: list = None,
                        selector: dict = None, labels: dict = None, 
-                       annotations: dict = None) -> Dict[str, Any]:
+                       annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Service
         
         Args:
@@ -1190,62 +1316,79 @@ class KubernetesAPIService:
             selector: 选择器
             labels: 标签
             annotations: 注解
+            resource: 完整的资源定义
             
         Returns:
             更新后的Service对象
         """
         try:
-            # 获取当前Service
-            current_service = self.v1_api.read_namespaced_service(name, namespace)
-            
-            # 更新字段
-            if service_type is not None:
-                current_service.spec.type = service_type
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
                 
-            if ports is not None:
-                current_service.spec.ports = []
-                for port in ports:
-                    service_port = client.V1ServicePort(
-                        port=port.get("port"),
-                        target_port=port.get("target_port"),
-                        protocol=port.get("protocol", "TCP"),
-                        name=port.get("name", f"port-{port.get('port')}")
-                    )
-                    if port.get("node_port") and (service_type == "NodePort" or current_service.spec.type == "NodePort"):
-                        service_port.node_port = port.get("node_port")
-                    current_service.spec.ports.append(service_port)
+                response = self.v1_api.patch_namespaced_service(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取当前Service
+                current_service = self.v1_api.read_namespaced_service(name, namespace)
+                
+                # 更新字段
+                if service_type is not None:
+                    current_service.spec.type = service_type
                     
-            if selector is not None:
-                current_service.spec.selector = selector
+                if ports is not None:
+                    current_service.spec.ports = []
+                    for port in ports:
+                        service_port = client.V1ServicePort(
+                            port=port.get("port"),
+                            target_port=port.get("target_port"),
+                            protocol=port.get("protocol", "TCP"),
+                            name=port.get("name", f"port-{port.get('port')}")
+                        )
+                        if port.get("node_port") and (service_type == "NodePort" or current_service.spec.type == "NodePort"):
+                            service_port.node_port = port.get("node_port")
+                        current_service.spec.ports.append(service_port)
+                        
+                if selector is not None:
+                    current_service.spec.selector = selector
+                    
+                if labels is not None:
+                    if current_service.metadata.labels is None:
+                        current_service.metadata.labels = {}
+                    current_service.metadata.labels.update(labels)
+                    
+                if annotations is not None:
+                    if current_service.metadata.annotations is None:
+                        current_service.metadata.annotations = {}
+                    current_service.metadata.annotations.update(annotations)
                 
-            if labels is not None:
-                if current_service.metadata.labels is None:
-                    current_service.metadata.labels = {}
-                current_service.metadata.labels.update(labels)
-                
-            if annotations is not None:
-                if current_service.metadata.annotations is None:
-                    current_service.metadata.annotations = {}
-                current_service.metadata.annotations.update(annotations)
-            
-            # 更新Service
-            updated_service = self.v1_api.replace_namespaced_service(
-                name=name,
+                # 更新Service
+                response = self.v1_api.replace_namespaced_service(
+                    name=name,
                 namespace=namespace,
                 body=current_service
             )
             
             # 转换为字典并返回
             return {
-                "name": updated_service.metadata.name,
-                "namespace": updated_service.metadata.namespace,
-                "uid": updated_service.metadata.uid,
-                "creation_timestamp": to_local_time_str(updated_service.metadata.creation_timestamp, 8) if updated_service.metadata.creation_timestamp else None,
-                "type": updated_service.spec.type,
-                "cluster_ip": updated_service.spec.cluster_ip,
-                "selector": updated_service.spec.selector,
-                "labels": updated_service.metadata.labels or {},
-                "annotations": updated_service.metadata.annotations or {}
+                "name": response.metadata.name,
+                "namespace": response.metadata.namespace,
+                "uid": response.metadata.uid,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "type": response.spec.type,
+                "cluster_ip": response.spec.cluster_ip,
+                "selector": response.spec.selector,
+                "labels": response.metadata.labels or {},
+                "annotations": response.metadata.annotations or {}
             }
             
         except ApiException as e:
@@ -1320,10 +1463,30 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 ConfigMap 详情失败: {e.reason}")
 
-    async def create_configmap(self, name: str, data: dict, namespace: str = "default",
-                         labels: dict = None) -> Dict[str, Any]:
+    async def create_configmap(self, name: str = None, data: dict = None, namespace: str = "default",
+                         labels: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 ConfigMap"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                # 创建 ConfigMap
+                response = self.v1_api.create_namespaced_config_map(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "data_keys": list(response.data.keys()) if response.data else []
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not data:
+                raise ValueError("name和data参数是必需的")
+            
             # 构建 ConfigMap
             configmap = client.V1ConfigMap(
                 api_version="v1",
@@ -1349,31 +1512,48 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"创建 ConfigMap 失败: {e}")
 
-    async def update_configmap(self, name: str, data: dict, namespace: str = "default",
-                         labels: dict = None) -> Dict[str, Any]:
+    async def update_configmap(self, name: str, data: dict = None, namespace: str = "default",
+                         labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 ConfigMap"""
         try:
-            # 获取现有的 ConfigMap
-            configmap = self.v1_api.read_namespaced_config_map(
-                name=name,
-                namespace=namespace
-            )
-            
-            # 更新数据
-            configmap.data = data
-            
-            # 更新标签
-            if labels is not None:
-                if configmap.metadata.labels:
-                    configmap.metadata.labels.update(labels)
-                else:
-                    configmap.metadata.labels = labels
-            
-            # 应用更新
-            response = self.v1_api.patch_namespaced_config_map(
-                name=name,
-                namespace=namespace,
-                body=configmap
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.v1_api.patch_namespaced_config_map(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 ConfigMap
+                configmap = self.v1_api.read_namespaced_config_map(
+                    name=name,
+                    namespace=namespace
+                )
+                
+                # 更新数据
+                if data is not None:
+                    configmap.data = data
+                
+                # 更新标签
+                if labels is not None:
+                    if configmap.metadata.labels:
+                        configmap.metadata.labels.update(labels)
+                    else:
+                        configmap.metadata.labels = labels
+                
+                # 应用更新
+                response = self.v1_api.patch_namespaced_config_map(
+                    name=name,
+                    namespace=namespace,
+                    body=configmap
             )
             
             return {
@@ -1461,10 +1641,31 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 Secret 失败: {e}") 
 
-    async def create_secret(self, name: str, data: dict, namespace: str = "default",
-                      secret_type: str = "Opaque", labels: dict = None) -> Dict[str, Any]:
+    async def create_secret(self, name: str = None, data: dict = None, namespace: str = "default",
+                      secret_type: str = "Opaque", labels: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Secret"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                # 创建 Secret
+                response = self.v1_api.create_namespaced_secret(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "type": response.type,
+                    "data_keys": list(response.data.keys()) if response.data else []
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not data:
+                raise ValueError("name和data参数是必需的")
+            
             import base64
             
             # 对数据进行 base64 编码
@@ -1502,41 +1703,57 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"创建 Secret 失败: {e}")
 
-    async def update_secret(self, name: str, data: dict, namespace: str = "default",
-                      labels: dict = None) -> Dict[str, Any]:
+    async def update_secret(self, name: str, data: dict = None, namespace: str = "default",
+                      labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Secret"""
         try:
             import base64
             
-            # 获取现有的 Secret
-            secret = self.v1_api.read_namespaced_secret(
-                name=name,
-                namespace=namespace
-            )
-            
-            # 对数据进行 base64 编码
-            encoded_data = {}
-            for key, value in data.items():
-                if isinstance(value, str):
-                    encoded_data[key] = base64.b64encode(value.encode()).decode()
-                else:
-                    encoded_data[key] = base64.b64encode(str(value).encode()).decode()
-            
-            # 更新数据
-            secret.data = encoded_data
-            
-            # 更新标签
-            if labels is not None:
-                if secret.metadata.labels:
-                    secret.metadata.labels.update(labels)
-                else:
-                    secret.metadata.labels = labels
-            
-            # 应用更新
-            response = self.v1_api.patch_namespaced_secret(
-                name=name,
-                namespace=namespace,
-                body=secret
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.v1_api.patch_namespaced_secret(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 Secret
+                secret = self.v1_api.read_namespaced_secret(
+                    name=name,
+                    namespace=namespace
+                )
+                
+                # 对数据进行 base64 编码
+                if data is not None:
+                    encoded_data = {}
+                    for key, value in data.items():
+                        if isinstance(value, str):
+                            encoded_data[key] = base64.b64encode(value.encode()).decode()
+                        else:
+                            encoded_data[key] = base64.b64encode(str(value).encode()).decode()
+                    # 更新数据
+                    secret.data = encoded_data
+                
+                # 更新标签
+                if labels is not None:
+                    if secret.metadata.labels:
+                        secret.metadata.labels.update(labels)
+                    else:
+                        secret.metadata.labels = labels
+                
+                # 应用更新
+                response = self.v1_api.patch_namespaced_secret(
+                    name=name,
+                    namespace=namespace,
+                    body=secret
             )
             
             return {
@@ -1659,12 +1876,30 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 Job 失败: {e}")
 
-    async def create_job(self, name: str, image: str, namespace: str = "default",
+    async def create_job(self, name: str = None, image: str = None, namespace: str = "default",
                    command: list = None, args: list = None, labels: dict = None,
                    env_vars: dict = None, resources: dict = None,
-                   restart_policy: str = "Never", backoff_limit: int = 6) -> Dict[str, Any]:
+                   restart_policy: str = "Never", backoff_limit: int = 6, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Job"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.batch_v1_api.create_namespaced_job(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not image:
+                raise ValueError("name和image参数是必需的")
+            
             if labels is None:
                 labels = {"app": name}
             
@@ -1730,6 +1965,59 @@ class KubernetesAPIService:
             
         except ApiException as e:
             raise Exception(f"创建 Job 失败: {e}")
+
+    async def update_job(self, name: str, namespace: str = "default",
+                        labels: dict = None, annotations: dict = None, 
+                        resource: Dict = None) -> Dict[str, Any]:
+        """更新 Job（Job的spec字段大多不可变，仅支持labels和annotations）"""
+        try:
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                # 确保metadata中包含name和namespace
+                if 'metadata' not in resource:
+                    resource['metadata'] = {}
+                resource['metadata']['name'] = name
+                resource['metadata']['namespace'] = namespace
+                
+                response = self.batch_v1_api.patch_namespaced_job(
+                    name=name,
+                    namespace=namespace,
+                    body=resource
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取当前Job
+                current_job = self.batch_v1_api.read_namespaced_job(name=name, namespace=namespace)
+                
+                # 更新metadata
+                if labels:
+                    if not current_job.metadata.labels:
+                        current_job.metadata.labels = {}
+                    current_job.metadata.labels.update(labels)
+                    
+                if annotations:
+                    if not current_job.metadata.annotations:
+                        current_job.metadata.annotations = {}
+                    current_job.metadata.annotations.update(annotations)
+                
+                # 执行更新
+                response = self.batch_v1_api.patch_namespaced_job(
+                    name=name,
+                    namespace=namespace,
+                    body=current_job
+                )
+            
+            return {
+                "name": response.metadata.name,
+                "namespace": response.metadata.namespace,
+                "uid": response.metadata.uid,
+                "labels": dict(response.metadata.labels or {}),
+                "annotations": dict(response.metadata.annotations or {}),
+                "creation_timestamp": response.metadata.creation_timestamp.strftime("%Y-%m-%d %H:%M:%S") if response.metadata.creation_timestamp else None
+            }
+            
+        except ApiException as e:
+            raise Exception(f"更新 Job 失败: {e}")
 
     async def delete_job(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 Job"""
@@ -1857,13 +2145,41 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 CronJob 失败: {e}")
 
-    async def create_cronjob(self, name: str, image: str, schedule: str,
+    async def create_cronjob(self, name: str = None, image: str = None, schedule: str = None,
                        namespace: str = "default", command: list = None,
                        args: list = None, labels: dict = None,
                        env_vars: dict = None, resources: dict = None,
-                       restart_policy: str = "Never", suspend: bool = False) -> Dict[str, Any]:
+                       restart_policy: str = "Never", suspend: bool = False, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 CronJob"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                try:
+                    response = self.batch_v1_api.create_namespaced_cron_job(
+                        namespace=namespace,
+                        body=resource
+                    )
+                except:
+                    # 回退到 batch/v1beta1 API
+                    resource_copy = resource.copy()
+                    resource_copy["apiVersion"] = "batch/v1beta1"
+                    response = self.batch_v1beta1_api.create_namespaced_cron_job(
+                        namespace=namespace,
+                        body=resource_copy
+                    )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "schedule": response.spec.schedule
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not image or not schedule:
+                raise ValueError("name、image和schedule参数是必需的")
+            
             if labels is None:
                 labels = {"app": name}
             
@@ -1948,52 +2264,77 @@ class KubernetesAPIService:
 
     async def update_cronjob(self, name: str, namespace: str = "default",
                        schedule: str = None, suspend: bool = None,
-                       image: str = None, labels: dict = None) -> Dict[str, Any]:
+                       image: str = None, labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 CronJob"""
         try:
-            # 获取现有的 CronJob
-            try:
-                cronjob = self.batch_v1_api.read_namespaced_cron_job(
-                    name=name,
-                    namespace=namespace
-                )
-                api_version = "batch/v1"
-            except:
-                cronjob = self.batch_v1beta1_api.read_namespaced_cron_job(
-                    name=name,
-                    namespace=namespace
-                )
-                api_version = "batch/v1beta1"
-            
-            # 更新调度
-            if schedule is not None:
-                cronjob.spec.schedule = schedule
-            
-            # 更新暂停状态
-            if suspend is not None:
-                cronjob.spec.suspend = suspend
-            
-            # 更新镜像
-            if image is not None:
-                cronjob.spec.job_template.spec.template.spec.containers[0].image = image
-            
-            # 更新标签
-            if labels is not None:
-                cronjob.metadata.labels.update(labels)
-            
-            # 应用更新
-            if api_version == "batch/v1":
-                response = self.batch_v1_api.patch_namespaced_cron_job(
-                    name=name,
-                    namespace=namespace,
-                    body=cronjob
-                )
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                # 尝试使用batch/v1 API
+                try:
+                    response = self.batch_v1_api.patch_namespaced_cron_job(
+                        name=name,
+                        namespace=namespace,
+                        body=body
+                    )
+                except:
+                    # 如果失败，尝试使用batch/v1beta1 API
+                    response = self.batch_v1beta1_api.patch_namespaced_cron_job(
+                        name=name,
+                        namespace=namespace,
+                        body=body
+                    )
             else:
-                response = self.batch_v1beta1_api.patch_namespaced_cron_job(
-                    name=name,
-                    namespace=namespace,
-                    body=cronjob
-                )
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 CronJob
+                try:
+                    cronjob = self.batch_v1_api.read_namespaced_cron_job(
+                        name=name,
+                        namespace=namespace
+                    )
+                    api_version = "batch/v1"
+                except:
+                    cronjob = self.batch_v1beta1_api.read_namespaced_cron_job(
+                        name=name,
+                        namespace=namespace
+                    )
+                    api_version = "batch/v1beta1"
+                
+                # 更新调度
+                if schedule is not None:
+                    cronjob.spec.schedule = schedule
+                
+                # 更新暂停状态
+                if suspend is not None:
+                    cronjob.spec.suspend = suspend
+                
+                # 更新镜像
+                if image is not None:
+                    cronjob.spec.job_template.spec.template.spec.containers[0].image = image
+                
+                # 更新标签
+                if labels is not None:
+                    cronjob.metadata.labels.update(labels)
+                
+                # 应用更新
+                if api_version == "batch/v1":
+                    response = self.batch_v1_api.patch_namespaced_cron_job(
+                        name=name,
+                        namespace=namespace,
+                        body=cronjob
+                    )
+                else:
+                    response = self.batch_v1beta1_api.patch_namespaced_cron_job(
+                        name=name,
+                        namespace=namespace,
+                        body=cronjob
+                    )
             
             return {
                 "name": response.metadata.name,
@@ -2141,11 +2482,30 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 Ingress 失败: {e}")
 
-    async def create_ingress(self, name: str, rules: list, namespace: str = "default",
+    async def create_ingress(self, name: str = None, rules: list = None, namespace: str = "default",
                        annotations: dict = None, tls: list = None,
-                       ingress_class_name: str = None, labels: dict = None) -> Dict[str, Any]:
+                       ingress_class_name: str = None, labels: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Ingress"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.networking_v1_api.create_namespaced_ingress(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "class_name": response.spec.ingress_class_name
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not rules:
+                raise ValueError("name和rules参数是必需的")
+            
             # 构建 Ingress 规则
             ingress_rules = []
             for rule in rules:
@@ -2224,81 +2584,97 @@ class KubernetesAPIService:
     async def update_ingress(self, name: str, namespace: str = "default",
                        rules: list = None, annotations: dict = None,
                        tls: list = None, ingress_class_name: str = None,
-                       labels: dict = None) -> Dict[str, Any]:
+                       labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Ingress"""
         try:
-            # 获取现有的 Ingress
-            ingress = self.networking_v1_api.read_namespaced_ingress(
-                name=name,
-                namespace=namespace
-            )
-            
-            # 更新规则
-            if rules is not None:
-                ingress_rules = []
-                for rule in rules:
-                    paths = []
-                    for path in rule.get("paths", []):
-                        paths.append(
-                            client.V1HTTPIngressPath(
-                                path=path.get("path", "/"),
-                                path_type=path.get("path_type", "Prefix"),
-                                backend=client.V1IngressBackend(
-                                    service=client.V1IngressServiceBackend(
-                                        name=path.get("service_name"),
-                                        port=client.V1ServiceBackendPort(
-                                            number=path.get("service_port", 80)
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.networking_v1_api.patch_namespaced_ingress(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 Ingress
+                ingress = self.networking_v1_api.read_namespaced_ingress(
+                    name=name,
+                    namespace=namespace
+                )
+                
+                # 更新规则
+                if rules is not None:
+                    ingress_rules = []
+                    for rule in rules:
+                        paths = []
+                        for path in rule.get("paths", []):
+                            paths.append(
+                                client.V1HTTPIngressPath(
+                                    path=path.get("path", "/"),
+                                    path_type=path.get("path_type", "Prefix"),
+                                    backend=client.V1IngressBackend(
+                                        service=client.V1IngressServiceBackend(
+                                            name=path.get("service_name"),
+                                            port=client.V1ServiceBackendPort(
+                                                number=path.get("service_port", 80)
+                                            )
                                         )
                                     )
                                 )
                             )
+                        
+                        ingress_rules.append(
+                            client.V1IngressRule(
+                                host=rule.get("host"),
+                                http=client.V1HTTPIngressRuleValue(paths=paths)
+                            )
                         )
                     
-                    ingress_rules.append(
-                        client.V1IngressRule(
-                            host=rule.get("host"),
-                            http=client.V1HTTPIngressRuleValue(paths=paths)
-                        )
-                    )
+                    ingress.spec.rules = ingress_rules
                 
-                ingress.spec.rules = ingress_rules
-            
-            # 更新 TLS 配置
-            if tls is not None:
-                tls_config = []
-                for tls_item in tls:
-                    tls_config.append(
-                        client.V1IngressTLS(
-                            secret_name=tls_item.get("secret_name"),
-                            hosts=tls_item.get("hosts", [])
+                # 更新 TLS 配置
+                if tls is not None:
+                    tls_config = []
+                    for tls_item in tls:
+                        tls_config.append(
+                            client.V1IngressTLS(
+                                secret_name=tls_item.get("secret_name"),
+                                hosts=tls_item.get("hosts", [])
+                            )
                         )
-                    )
-                ingress.spec.tls = tls_config
-            
-            # 更新 Ingress Class
-            if ingress_class_name is not None:
-                ingress.spec.ingress_class_name = ingress_class_name
-            
-            # 更新标签
-            if labels is not None:
-                if ingress.metadata.labels:
-                    ingress.metadata.labels.update(labels)
-                else:
-                    ingress.metadata.labels = labels
-            
-            # 更新注解
-            if annotations is not None:
-                if ingress.metadata.annotations:
-                    ingress.metadata.annotations.update(annotations)
-                else:
-                    ingress.metadata.annotations = annotations
-            
-            # 应用更新
-            response = self.networking_v1_api.patch_namespaced_ingress(
-                name=name,
-                namespace=namespace,
-                body=ingress
-            )
+                    ingress.spec.tls = tls_config
+                
+                # 更新 Ingress Class
+                if ingress_class_name is not None:
+                    ingress.spec.ingress_class_name = ingress_class_name
+                
+                # 更新标签
+                if labels is not None:
+                    if ingress.metadata.labels:
+                        ingress.metadata.labels.update(labels)
+                    else:
+                        ingress.metadata.labels = labels
+                
+                # 更新注解
+                if annotations is not None:
+                    if ingress.metadata.annotations:
+                        ingress.metadata.annotations.update(annotations)
+                    else:
+                        ingress.metadata.annotations = annotations
+                
+                # 应用更新
+                response = self.networking_v1_api.patch_namespaced_ingress(
+                    name=name,
+                    namespace=namespace,
+                    body=ingress
+                )
             
             return {
                 "name": response.metadata.name,
@@ -2396,15 +2772,32 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 StorageClass 失败: {e}")
 
-    async def create_storageclass(self, name: str, provisioner: str,
+    async def create_storageclass(self, name: str = None, provisioner: str = None,
                             reclaim_policy: str = "Delete",
                             volume_binding_mode: str = "Immediate",
                             allow_volume_expansion: bool = False,
                             parameters: dict = None,
                             labels: dict = None,
-                            annotations: dict = None) -> Dict[str, Any]:
+                            annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 StorageClass"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.storage_v1_api.create_storage_class(body=resource)
+                
+                return {
+                    "name": response.metadata.name,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "provisioner": response.provisioner,
+                    "reclaim_policy": response.reclaim_policy,
+                    "volume_binding_mode": response.volume_binding_mode
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not provisioner:
+                raise ValueError("name和provisioner参数是必需的")
+            
             # 构建 StorageClass
             storage_class = client.V1StorageClass(
                 api_version="storage.k8s.io/v1",
@@ -2442,42 +2835,56 @@ class KubernetesAPIService:
                             allow_volume_expansion: bool = None,
                             parameters: dict = None,
                             labels: dict = None,
-                            annotations: dict = None) -> Dict[str, Any]:
+                            annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 StorageClass"""
         try:
-            # 获取现有的 StorageClass
-            storage_class = self.storage_v1_api.read_storage_class(name=name)
-            
-            # 更新字段
-            if provisioner is not None:
-                storage_class.provisioner = provisioner
-            if reclaim_policy is not None:
-                storage_class.reclaim_policy = reclaim_policy
-            if volume_binding_mode is not None:
-                storage_class.volume_binding_mode = volume_binding_mode
-            if allow_volume_expansion is not None:
-                storage_class.allow_volume_expansion = allow_volume_expansion
-            if parameters is not None:
-                storage_class.parameters = parameters
-            
-            # 更新标签
-            if labels is not None:
-                if storage_class.metadata.labels:
-                    storage_class.metadata.labels.update(labels)
-                else:
-                    storage_class.metadata.labels = labels
-            
-            # 更新注解
-            if annotations is not None:
-                if storage_class.metadata.annotations:
-                    storage_class.metadata.annotations.update(annotations)
-                else:
-                    storage_class.metadata.annotations = annotations
-            
-            # 应用更新
-            response = self.storage_v1_api.patch_storage_class(
-                name=name,
-                body=storage_class
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                
+                response = self.storage_v1_api.patch_storage_class(
+                    name=name,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 StorageClass
+                storage_class = self.storage_v1_api.read_storage_class(name=name)
+                
+                # 更新字段
+                if provisioner is not None:
+                    storage_class.provisioner = provisioner
+                if reclaim_policy is not None:
+                    storage_class.reclaim_policy = reclaim_policy
+                if volume_binding_mode is not None:
+                    storage_class.volume_binding_mode = volume_binding_mode
+                if allow_volume_expansion is not None:
+                    storage_class.allow_volume_expansion = allow_volume_expansion
+                if parameters is not None:
+                    storage_class.parameters = parameters
+                
+                # 更新标签
+                if labels is not None:
+                    if storage_class.metadata.labels:
+                        storage_class.metadata.labels.update(labels)
+                    else:
+                        storage_class.metadata.labels = labels
+                
+                # 更新注解
+                if annotations is not None:
+                    if storage_class.metadata.annotations:
+                        storage_class.metadata.annotations.update(annotations)
+                    else:
+                        storage_class.metadata.annotations = annotations
+                
+                # 应用更新
+                response = self.storage_v1_api.patch_storage_class(
+                    name=name,
+                    body=storage_class
             )
             
             return {
@@ -2582,8 +2989,8 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 PersistentVolume 失败: {e}")
 
-    async def create_persistentvolume(self, name: str, capacity: str,
-                                access_modes: list,
+    async def create_persistentvolume(self, name: str = None, capacity: str = None,
+                                access_modes: list = None,
                                 reclaim_policy: str = "Retain",
                                 storage_class_name: str = None,
                                 volume_mode: str = "Filesystem",
@@ -2591,9 +2998,27 @@ class KubernetesAPIService:
                                 nfs: dict = None,
                                 labels: dict = None,
                                 annotations: dict = None,
-                                csi: dict = None) -> Dict[str, Any]:
+                                csi: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 PersistentVolume"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.v1_api.create_persistent_volume(body=resource)
+                
+                return {
+                    "name": response.metadata.name,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "capacity": response.spec.capacity,
+                    "access_modes": response.spec.access_modes,
+                    "reclaim_policy": response.spec.persistent_volume_reclaim_policy,
+                    "storage_class_name": response.spec.storage_class_name
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not capacity or not access_modes:
+                raise ValueError("name、capacity和access_modes参数是必需的")
+            
             # 构建存储源
             volume_source = None
             if host_path:
@@ -2664,41 +3089,55 @@ class KubernetesAPIService:
                                 reclaim_policy: str = None,
                                 storage_class_name: str = None,
                                 labels: dict = None,
-                                annotations: dict = None) -> Dict[str, Any]:
+                                annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 PersistentVolume"""
         try:
-            # 获取现有的 PersistentVolume
-            pv = self.v1_api.read_persistent_volume(name=name)
-            
-            # 更新字段
-            if capacity is not None:
-                pv.spec.capacity = {"storage": capacity}
-            if access_modes is not None:
-                pv.spec.access_modes = access_modes
-            if reclaim_policy is not None:
-                pv.spec.persistent_volume_reclaim_policy = reclaim_policy
-            if storage_class_name is not None:
-                pv.spec.storage_class_name = storage_class_name
-            
-            # 更新标签
-            if labels is not None:
-                if pv.metadata.labels:
-                    pv.metadata.labels.update(labels)
-                else:
-                    pv.metadata.labels = labels
-            
-            # 更新注解
-            if annotations is not None:
-                if pv.metadata.annotations:
-                    pv.metadata.annotations.update(annotations)
-                else:
-                    pv.metadata.annotations = annotations
-            
-            # 应用更新
-            response = self.v1_api.patch_persistent_volume(
-                name=name,
-                body=pv
-            )
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                
+                response = self.v1_api.patch_persistent_volume(
+                    name=name,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 PersistentVolume
+                pv = self.v1_api.read_persistent_volume(name=name)
+                
+                # 更新字段
+                if capacity is not None:
+                    pv.spec.capacity = {"storage": capacity}
+                if access_modes is not None:
+                    pv.spec.access_modes = access_modes
+                if reclaim_policy is not None:
+                    pv.spec.persistent_volume_reclaim_policy = reclaim_policy
+                if storage_class_name is not None:
+                    pv.spec.storage_class_name = storage_class_name
+                
+                # 更新标签
+                if labels is not None:
+                    if pv.metadata.labels:
+                        pv.metadata.labels.update(labels)
+                    else:
+                        pv.metadata.labels = labels
+                
+                # 更新注解
+                if annotations is not None:
+                    if pv.metadata.annotations:
+                        pv.metadata.annotations.update(annotations)
+                    else:
+                        pv.metadata.annotations = annotations
+                
+                # 应用更新
+                response = self.v1_api.patch_persistent_volume(
+                    name=name,
+                    body=pv
+                )
             
             return {
                 "name": response.metadata.name,
@@ -2806,16 +3245,37 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 PersistentVolumeClaim 失败: {e}")
 
-    async def create_persistentvolumeclaim(self, name: str, size: str,
+    async def create_persistentvolumeclaim(self, name: str = None, size: str = None,
                                      namespace: str = "default",
                                      access_modes: list = None,
                                      storage_class_name: str = None,
                                      volume_mode: str = "Filesystem",
                                      volume_name: str = None,
                                      labels: dict = None,
-                                     annotations: dict = None) -> Dict[str, Any]:
+                                     annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 PersistentVolumeClaim"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.v1_api.create_namespaced_persistent_volume_claim(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "access_modes": response.spec.access_modes,
+                    "requests": response.spec.resources.requests,
+                    "storage_class_name": response.spec.storage_class_name
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name or not size:
+                raise ValueError("name和size参数是必需的")
+            
             if access_modes is None:
                 access_modes = ["ReadWriteOnce"]
             
@@ -2870,43 +3330,59 @@ class KubernetesAPIService:
                                      access_modes: list = None,
                                      storage_class_name: str = None,
                                      labels: dict = None,
-                                     annotations: dict = None) -> Dict[str, Any]:
+                                     annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 PersistentVolumeClaim"""
         try:
-            # 获取现有的 PersistentVolumeClaim
-            pvc = self.v1_api.read_namespaced_persistent_volume_claim(
-                name=name,
-                namespace=namespace
-            )
-            
-            # 更新字段
-            if size is not None:
-                pvc.spec.resources.requests["storage"] = size
-            if access_modes is not None:
-                pvc.spec.access_modes = access_modes
-            if storage_class_name is not None:
-                pvc.spec.storage_class_name = storage_class_name
-            
-            # 更新标签
-            if labels is not None:
-                if pvc.metadata.labels:
-                    pvc.metadata.labels.update(labels)
-                else:
-                    pvc.metadata.labels = labels
-            
-            # 更新注解
-            if annotations is not None:
-                if pvc.metadata.annotations:
-                    pvc.metadata.annotations.update(annotations)
-                else:
-                    pvc.metadata.annotations = annotations
-            
-            # 应用更新
-            response = self.v1_api.patch_namespaced_persistent_volume_claim(
-                name=name,
-                namespace=namespace,
-                body=pvc
-            )
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.v1_api.patch_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的 PersistentVolumeClaim
+                pvc = self.v1_api.read_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=namespace
+                )
+                
+                # 更新字段
+                if size is not None:
+                    pvc.spec.resources.requests["storage"] = size
+                if access_modes is not None:
+                    pvc.spec.access_modes = access_modes
+                if storage_class_name is not None:
+                    pvc.spec.storage_class_name = storage_class_name
+                
+                # 更新标签
+                if labels is not None:
+                    if pvc.metadata.labels:
+                        pvc.metadata.labels.update(labels)
+                    else:
+                        pvc.metadata.labels = labels
+                
+                # 更新注解
+                if annotations is not None:
+                    if pvc.metadata.annotations:
+                        pvc.metadata.annotations.update(annotations)
+                    else:
+                        pvc.metadata.annotations = annotations
+                
+                # 应用更新
+                response = self.v1_api.patch_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=namespace,
+                    body=pvc
+                )
             
             return {
                 "name": response.metadata.name,
@@ -2943,6 +3419,1011 @@ class KubernetesAPIService:
             
         except ApiException as e:
             raise Exception(f"删除 PersistentVolumeClaim 失败: {e}") 
+
+    # ==================== ServiceAccount 相关方法 ====================
+
+    async def list_serviceaccounts(self, namespace: str = "default") -> List[Dict[str, Any]]:
+        """列出ServiceAccount"""
+        try:
+            response = self.v1_api.list_namespaced_service_account(namespace=namespace)
+            
+            serviceaccounts = []
+            for item in response.items:
+                serviceaccount_info = {
+                    "name": item.metadata.name,
+                    "namespace": item.metadata.namespace,
+                    "uid": item.metadata.uid,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp),
+                    "labels": item.metadata.labels or {},
+                    "annotations": item.metadata.annotations or {},
+                    "secrets": [secret.name for secret in (item.secrets or [])],
+                    "image_pull_secrets": [secret.name for secret in (item.image_pull_secrets or [])],
+                    "automount_service_account_token": item.automount_service_account_token
+                }
+                serviceaccounts.append(serviceaccount_info)
+            
+            return serviceaccounts
+            
+        except ApiException as e:
+            raise Exception(f"获取ServiceAccount列表失败: {e.reason}")
+
+    async def get_serviceaccount(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """获取ServiceAccount详情"""
+        try:
+            response = self.v1_api.read_namespaced_service_account(name=name, namespace=namespace)
+            
+            return {
+                "name": response.metadata.name,
+                "namespace": response.metadata.namespace,
+                "uid": response.metadata.uid,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp),
+                "labels": response.metadata.labels or {},
+                "annotations": response.metadata.annotations or {},
+                "secrets": [secret.name for secret in (response.secrets or [])],
+                "image_pull_secrets": [secret.name for secret in (response.image_pull_secrets or [])],
+                "automount_service_account_token": response.automount_service_account_token
+            }
+            
+        except ApiException as e:
+            if e.status == 404:
+                raise Exception(f"ServiceAccount {name} 在命名空间 {namespace} 中不存在")
+            raise Exception(f"获取ServiceAccount失败: {e.reason}")
+
+    async def create_serviceaccount(self, name: str = None, namespace: str = "default", 
+                                  labels: Dict[str, str] = None,
+                                  annotations: Dict[str, str] = None,
+                                  secrets: List[str] = None,
+                                  image_pull_secrets: List[str] = None,
+                                  automount_service_account_token: bool = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
+        """创建ServiceAccount"""
+        try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.v1_api.create_namespaced_service_account(namespace=namespace, body=resource)
+                
+                return {
+                    "success": True,
+                    "message": f"ServiceAccount {resource.get('metadata', {}).get('name', 'unknown')} 创建成功",
+                    "serviceaccount": {
+                        "name": response.metadata.name,
+                        "namespace": response.metadata.namespace,
+                        "uid": response.metadata.uid,
+                        "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp)
+                    }
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name:
+                raise ValueError("name参数是必需的")
+            
+            # 构建ServiceAccount对象
+            body = client.V1ServiceAccount(
+                metadata=client.V1ObjectMeta(
+                    name=name,
+                    namespace=namespace,
+                    labels=labels,
+                    annotations=annotations
+                )
+            )
+            
+            # 设置secrets
+            if secrets:
+                body.secrets = [client.V1ObjectReference(name=secret_name) for secret_name in secrets]
+            
+            # 设置image_pull_secrets
+            if image_pull_secrets:
+                body.image_pull_secrets = [client.V1LocalObjectReference(name=secret_name) for secret_name in image_pull_secrets]
+            
+            # 设置automount_service_account_token
+            if automount_service_account_token is not None:
+                body.automount_service_account_token = automount_service_account_token
+            
+            response = self.v1_api.create_namespaced_service_account(namespace=namespace, body=body)
+            
+            return {
+                "success": True,
+                "message": f"ServiceAccount {name} 创建成功",
+                "serviceaccount": {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp)
+                }
+            }
+            
+        except ApiException as e:
+            raise Exception(f"创建ServiceAccount失败: {e.reason}")
+
+    async def update_serviceaccount(self, name: str, namespace: str = "default",
+                                  labels: Dict[str, str] = None,
+                                  annotations: Dict[str, str] = None,
+                                  secrets: List[str] = None,
+                                  image_pull_secrets: List[str] = None,
+                                  automount_service_account_token: bool = None, resource: Dict = None) -> Dict[str, Any]:
+        """更新ServiceAccount"""
+        try:
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.v1_api.patch_namespaced_service_account(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有的ServiceAccount
+                current = self.v1_api.read_namespaced_service_account(name=name, namespace=namespace)
+                
+                # 更新metadata
+                if labels is not None:
+                    if current.metadata.labels is None:
+                        current.metadata.labels = {}
+                    current.metadata.labels.update(labels)
+                if annotations is not None:
+                    if current.metadata.annotations is None:
+                        current.metadata.annotations = {}
+                    current.metadata.annotations.update(annotations)
+                
+                # 更新secrets
+                if secrets is not None:
+                    current.secrets = [client.V1ObjectReference(name=secret_name) for secret_name in secrets]
+                
+                # 更新image_pull_secrets
+                if image_pull_secrets is not None:
+                    current.image_pull_secrets = [client.V1LocalObjectReference(name=secret_name) for secret_name in image_pull_secrets]
+                
+                # 更新automount_service_account_token
+                if automount_service_account_token is not None:
+                    current.automount_service_account_token = automount_service_account_token
+                
+                response = self.v1_api.replace_namespaced_service_account(
+                    name=name,
+                    namespace=namespace,
+                    body=current
+                )
+            
+            return {
+                "success": True,
+                "message": f"ServiceAccount {name} 更新成功",
+                "serviceaccount": {
+                    "name": response.metadata.name,
+                    "namespace": response.metadata.namespace,
+                    "uid": response.metadata.uid
+                }
+            }
+            
+        except ApiException as e:
+            raise Exception(f"更新ServiceAccount失败: {e.reason}")
+
+    async def delete_serviceaccount(self, name: str, namespace: str = "default",
+                                  grace_period_seconds: int = None) -> Dict[str, Any]:
+        """删除ServiceAccount"""
+        try:
+            delete_options = client.V1DeleteOptions()
+            if grace_period_seconds is not None:
+                delete_options.grace_period_seconds = grace_period_seconds
+            
+            self.v1_api.delete_namespaced_service_account(
+                name=name,
+                namespace=namespace,
+                body=delete_options
+            )
+            
+            return {
+                "success": True,
+                "message": f"ServiceAccount {name} 删除成功"
+            }
+            
+        except ApiException as e:
+            raise Exception(f"删除ServiceAccount失败: {e.reason}")
+
+    # ========================== RBAC 服务层方法 ==========================
+
+    async def list_roles(self, namespace: str = "default", label_selector: str = None) -> List[Dict[str, Any]]:
+        """列出Role"""
+        try:
+            roles = self.rbac_v1_api.list_namespaced_role(
+                namespace=namespace,
+                label_selector=label_selector
+            )
+            
+            result = []
+            for role in roles.items:
+                role_dict = {
+                    "name": role.metadata.name,
+                    "namespace": role.metadata.namespace,
+                    "rules": [],
+                    "labels": role.metadata.labels,
+                    "annotations": role.metadata.annotations,
+                    "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
+                    "uid": role.metadata.uid
+                }
+                
+                # 转换规则
+                for rule in role.rules:
+                    rule_dict = {
+                        "api_groups": rule.api_groups,
+                        "resources": rule.resources,
+                        "verbs": rule.verbs,
+                        "resource_names": rule.resource_names,
+                        "non_resource_urls": getattr(rule, 'non_resource_urls', [])
+                    }
+                    role_dict["rules"].append(rule_dict)
+                
+                result.append(role_dict)
+            
+            return result
+        except ApiException as e:
+            raise Exception(f"获取Role列表失败: {e.reason}")
+
+    async def get_role(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """获取Role详情"""
+        try:
+            role = self.rbac_v1_api.read_namespaced_role(name=name, namespace=namespace)
+            
+            role_dict = {
+                "name": role.metadata.name,
+                "namespace": role.metadata.namespace,
+                "rules": [],
+                "labels": role.metadata.labels,
+                "annotations": role.metadata.annotations,
+                "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
+                "uid": role.metadata.uid
+            }
+            
+            # 转换规则
+            for rule in role.rules:
+                rule_dict = {
+                    "api_groups": rule.api_groups,
+                    "resources": rule.resources,
+                    "verbs": rule.verbs,
+                    "resource_names": rule.resource_names,
+                    "non_resource_urls": getattr(rule, 'non_resource_urls', [])
+                }
+                role_dict["rules"].append(rule_dict)
+            
+            return role_dict
+        except ApiException as e:
+            raise Exception(f"获取Role详情失败: {e.reason}")
+
+    async def create_role(self, name: str = None, namespace: str = "default", rules: list = None,
+                         labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
+        """创建Role"""
+        try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                created_role = self.rbac_v1_api.create_namespaced_role(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "success": True,
+                    "name": created_role.metadata.name,
+                    "namespace": created_role.metadata.namespace,
+                    "message": f"Role {created_role.metadata.name} 创建成功"
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name:
+                raise ValueError("name参数是必需的")
+            
+            # 转换规则
+            role_rules = []
+            if rules:
+                for rule in rules:
+                    role_rule = client.V1PolicyRule(
+                        api_groups=rule.get("api_groups", []),
+                        resources=rule.get("resources", []),
+                        verbs=rule.get("verbs", []),
+                        resource_names=rule.get("resource_names", []),
+                    )
+                    role_rules.append(role_rule)
+            
+            role = client.V1Role(
+                metadata=client.V1ObjectMeta(
+                    name=name,
+                    namespace=namespace,
+                    labels=labels,
+                    annotations=annotations
+                ),
+                rules=role_rules
+            )
+            
+            created_role = self.rbac_v1_api.create_namespaced_role(
+                namespace=namespace,
+                body=role
+            )
+            
+            return {
+                "success": True,
+                "name": created_role.metadata.name,
+                "namespace": created_role.metadata.namespace,
+                "message": f"Role {name} 创建成功"
+            }
+        except ApiException as e:
+            raise Exception(f"创建Role失败: {e.reason}")
+
+    async def update_role(self, name: str, namespace: str = "default", rules: list = None,
+                         labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
+        """更新Role"""
+        try:
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.rbac_v1_api.patch_namespaced_role(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有Role
+                existing_role = self.rbac_v1_api.read_namespaced_role(name=name, namespace=namespace)
+                
+                # 更新规则
+                if rules is not None:
+                    role_rules = []
+                    for rule in rules:
+                        role_rule = client.V1PolicyRule(
+                            api_groups=rule.get("api_groups", []),
+                            resources=rule.get("resources", []),
+                            verbs=rule.get("verbs", []),
+                            resource_names=rule.get("resource_names", []),
+                        )
+                        role_rules.append(role_rule)
+                    existing_role.rules = role_rules
+                
+                # 更新标签和注解
+                if labels is not None:
+                    existing_role.metadata.labels = labels
+                if annotations is not None:
+                    existing_role.metadata.annotations = annotations
+                
+                response = self.rbac_v1_api.replace_namespaced_role(
+                    name=name,
+                    namespace=namespace,
+                    body=existing_role
+            )
+            
+            return {
+                "success": True,
+                "name": response.metadata.name,
+                "namespace": response.metadata.namespace,
+                "message": f"Role {name} 更新成功"
+            }
+        except ApiException as e:
+            raise Exception(f"更新Role失败: {e.reason}")
+
+    async def delete_role(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """删除Role"""
+        try:
+            self.rbac_v1_api.delete_namespaced_role(name=name, namespace=namespace)
+            
+            return {
+                "success": True,
+                "message": f"Role {name} 删除成功"
+            }
+        except ApiException as e:
+            raise Exception(f"删除Role失败: {e.reason}")
+
+    async def list_cluster_roles(self, label_selector: str = None) -> List[Dict[str, Any]]:
+        """列出ClusterRole"""
+        try:
+            cluster_roles = self.rbac_v1_api.list_cluster_role(label_selector=label_selector)
+            
+            result = []
+            for role in cluster_roles.items:
+                role_dict = {
+                    "name": role.metadata.name,
+                    "rules": [],
+                    "labels": role.metadata.labels,
+                    "annotations": role.metadata.annotations,
+                    "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
+                    "uid": role.metadata.uid
+                }
+                
+                # 转换规则
+                for rule in role.rules:
+                    rule_dict = {
+                        "api_groups": rule.api_groups,
+                        "resources": rule.resources,
+                        "verbs": rule.verbs,
+                        "resource_names": rule.resource_names,
+                        "non_resource_urls": getattr(rule, 'non_resource_urls', [])
+                    }
+                    role_dict["rules"].append(rule_dict)
+                
+                result.append(role_dict)
+            
+            return result
+        except ApiException as e:
+            raise Exception(f"获取ClusterRole列表失败: {e.reason}")
+
+    async def get_cluster_role(self, name: str) -> Dict[str, Any]:
+        """获取ClusterRole详情"""
+        try:
+            role = self.rbac_v1_api.read_cluster_role(name=name)
+            
+            role_dict = {
+                "name": role.metadata.name,
+                "rules": [],
+                "labels": role.metadata.labels,
+                "annotations": role.metadata.annotations,
+                "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
+                "uid": role.metadata.uid
+            }
+            
+            # 转换规则
+            for rule in role.rules:
+                rule_dict = {
+                    "api_groups": rule.api_groups,
+                    "resources": rule.resources,
+                    "verbs": rule.verbs,
+                    "resource_names": rule.resource_names,
+                    "non_resource_urls": getattr(rule, 'non_resource_urls', [])
+                }
+                role_dict["rules"].append(rule_dict)
+            
+            return role_dict
+        except ApiException as e:
+            raise Exception(f"获取ClusterRole详情失败: {e.reason}")
+
+    async def create_cluster_role(self, name: str = None, rules: list = None,
+                                labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
+        """创建ClusterRole"""
+        try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                created_role = self.rbac_v1_api.create_cluster_role(body=resource)
+                
+                return {
+                    "success": True,
+                    "name": created_role.metadata.name,
+                    "message": f"ClusterRole {created_role.metadata.name} 创建成功"
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name:
+                raise ValueError("name参数是必需的")
+            
+            # 转换规则
+            role_rules = []
+            if rules:
+                for rule in rules:
+                    role_rule = client.V1PolicyRule(
+                        api_groups=rule.get("api_groups", []),
+                        resources=rule.get("resources", []),
+                        verbs=rule.get("verbs", []),
+                        resource_names=rule.get("resource_names", []),
+                    )
+                    role_rules.append(role_rule)
+            
+            cluster_role = client.V1ClusterRole(
+                metadata=client.V1ObjectMeta(
+                    name=name,
+                    labels=labels,
+                    annotations=annotations
+                ),
+                rules=role_rules
+            )
+            
+            created_role = self.rbac_v1_api.create_cluster_role(body=cluster_role)
+            
+            return {
+                "success": True,
+                "name": created_role.metadata.name,
+                "message": f"ClusterRole {name} 创建成功"
+            }
+        except ApiException as e:
+            raise Exception(f"创建ClusterRole失败: {e.reason}")
+
+    async def update_cluster_role(self, name: str, rules: list = None,
+                                labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
+        """更新ClusterRole"""
+        try:
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                
+                response = self.rbac_v1_api.patch_cluster_role(
+                    name=name,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有ClusterRole
+                existing_role = self.rbac_v1_api.read_cluster_role(name=name)
+                
+                # 更新规则
+                if rules is not None:
+                    role_rules = []
+                    for rule in rules:
+                        role_rule = client.V1PolicyRule(
+                            api_groups=rule.get("api_groups", []),
+                            resources=rule.get("resources", []),
+                            verbs=rule.get("verbs", []),
+                            resource_names=rule.get("resource_names", []),
+                        )
+                        role_rules.append(role_rule)
+                    existing_role.rules = role_rules
+                
+                # 更新标签和注解
+                if labels is not None:
+                    existing_role.metadata.labels = labels
+                if annotations is not None:
+                    existing_role.metadata.annotations = annotations
+                
+                response = self.rbac_v1_api.replace_cluster_role(
+                    name=name,
+                    body=existing_role
+            )
+            
+            return {
+                "success": True,
+                "name": response.metadata.name,
+                "message": f"ClusterRole {name} 更新成功"
+            }
+        except ApiException as e:
+            raise Exception(f"更新ClusterRole失败: {e.reason}")
+
+    async def delete_cluster_role(self, name: str) -> Dict[str, Any]:
+        """删除ClusterRole"""
+        try:
+            self.rbac_v1_api.delete_cluster_role(name=name)
+            
+            return {
+                "success": True,
+                "message": f"ClusterRole {name} 删除成功"
+            }
+        except ApiException as e:
+            raise Exception(f"删除ClusterRole失败: {e.reason}")
+
+    async def list_role_bindings(self, namespace: str = "default", label_selector: str = None) -> List[Dict[str, Any]]:
+        """列出RoleBinding"""
+        try:
+            role_bindings = self.rbac_v1_api.list_namespaced_role_binding(
+                namespace=namespace,
+                label_selector=label_selector
+            )
+            
+            result = []
+            for rb in role_bindings.items:
+                rb_dict = {
+                    "name": rb.metadata.name,
+                    "namespace": rb.metadata.namespace,
+                    "role_ref": {
+                        "api_group": rb.role_ref.api_group,
+                        "kind": rb.role_ref.kind,
+                        "name": rb.role_ref.name
+                    },
+                    "subjects": [],
+                    "labels": rb.metadata.labels,
+                    "annotations": rb.metadata.annotations,
+                    "creation_timestamp": to_local_time_str(rb.metadata.creation_timestamp),
+                    "uid": rb.metadata.uid
+                }
+                
+                # 转换subjects
+                for subject in rb.subjects:
+                    subject_dict = {
+                        "kind": subject.kind,
+                        "name": subject.name,
+                        "api_group": subject.api_group,
+                        "namespace": subject.namespace
+                    }
+                    rb_dict["subjects"].append(subject_dict)
+                
+                result.append(rb_dict)
+            
+            return result
+        except ApiException as e:
+            raise Exception(f"获取RoleBinding列表失败: {e.reason}")
+
+    async def get_role_binding(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """获取RoleBinding详情"""
+        try:
+            rb = self.rbac_v1_api.read_namespaced_role_binding(name=name, namespace=namespace)
+            
+            rb_dict = {
+                "name": rb.metadata.name,
+                "namespace": rb.metadata.namespace,
+                "role_ref": {
+                    "api_group": rb.role_ref.api_group,
+                    "kind": rb.role_ref.kind,
+                    "name": rb.role_ref.name
+                },
+                "subjects": [],
+                "labels": rb.metadata.labels,
+                "annotations": rb.metadata.annotations,
+                "creation_timestamp": to_local_time_str(rb.metadata.creation_timestamp),
+                "uid": rb.metadata.uid
+            }
+            
+            # 转换subjects
+            for subject in rb.subjects:
+                subject_dict = {
+                    "kind": subject.kind,
+                    "name": subject.name,
+                    "api_group": subject.api_group,
+                    "namespace": subject.namespace
+                }
+                rb_dict["subjects"].append(subject_dict)
+            
+            return rb_dict
+        except ApiException as e:
+            raise Exception(f"获取RoleBinding详情失败: {e.reason}")
+
+    async def create_role_binding(self, name: str = None, namespace: str = "default", 
+                                role_ref: dict = None, subjects: list = None,
+                                labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
+        """创建RoleBinding"""
+        try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                created_rb = self.rbac_v1_api.create_namespaced_role_binding(
+                    namespace=namespace,
+                    body=resource
+                )
+                
+                return {
+                    "success": True,
+                    "name": created_rb.metadata.name,
+                    "namespace": created_rb.metadata.namespace,
+                    "message": f"RoleBinding {created_rb.metadata.name} 创建成功"
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name:
+                raise ValueError("name参数是必需的")
+            
+            # 转换role_ref
+            role_ref_obj = None
+            if role_ref:
+                role_ref_obj = client.V1RoleRef(
+                    api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
+                    kind=role_ref.get("kind", "Role"),
+                    name=role_ref.get("name")
+                )
+            
+            # 转换subjects
+            subjects_list = []
+            if subjects:
+                for subject in subjects:
+                    subject_obj = client.RbacV1Subject(
+                        kind=subject.get("kind"),
+                        name=subject.get("name"),
+                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
+                        namespace=subject.get("namespace")
+                    )
+                    subjects_list.append(subject_obj)
+            
+            role_binding = client.V1RoleBinding(
+                metadata=client.V1ObjectMeta(
+                    name=name,
+                    namespace=namespace,
+                    labels=labels,
+                    annotations=annotations
+                ),
+                role_ref=role_ref_obj,
+                subjects=subjects_list
+            )
+            
+            created_rb = self.rbac_v1_api.create_namespaced_role_binding(
+                namespace=namespace,
+                body=role_binding
+            )
+            
+            return {
+                "success": True,
+                "name": created_rb.metadata.name,
+                "namespace": created_rb.metadata.namespace,
+                "message": f"RoleBinding {name} 创建成功"
+            }
+        except ApiException as e:
+            raise Exception(f"创建RoleBinding失败: {e.reason}")
+
+    async def update_role_binding(self, name: str, namespace: str = "default",
+                                role_ref: dict = None, subjects: list = None,
+                                labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
+        """更新RoleBinding"""
+        try:
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name和namespace
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                body['metadata']['namespace'] = namespace
+                
+                response = self.rbac_v1_api.patch_namespaced_role_binding(
+                    name=name,
+                    namespace=namespace,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有RoleBinding
+                existing_rb = self.rbac_v1_api.read_namespaced_role_binding(name=name, namespace=namespace)
+                
+                # 更新role_ref
+                if role_ref is not None:
+                    role_ref_obj = client.V1RoleRef(
+                        api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
+                        kind=role_ref.get("kind", "Role"),
+                        name=role_ref.get("name")
+                    )
+                    existing_rb.role_ref = role_ref_obj
+                
+                # 更新subjects
+                if subjects is not None:
+                    subjects_list = []
+                    for subject in subjects:
+                        subject_obj = client.RbacV1Subject(
+                            kind=subject.get("kind"),
+                            name=subject.get("name"),
+                            api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
+                            namespace=subject.get("namespace")
+                        )
+                        subjects_list.append(subject_obj)
+                    existing_rb.subjects = subjects_list
+                
+                # 更新标签和注解
+                if labels is not None:
+                    existing_rb.metadata.labels = labels
+                if annotations is not None:
+                    existing_rb.metadata.annotations = annotations
+                
+                response = self.rbac_v1_api.replace_namespaced_role_binding(
+                    name=name,
+                    namespace=namespace,
+                    body=existing_rb
+            )
+            
+            return {
+                "success": True,
+                "name": response.metadata.name,
+                "namespace": response.metadata.namespace,
+                "message": f"RoleBinding {name} 更新成功"
+            }
+        except ApiException as e:
+            raise Exception(f"更新RoleBinding失败: {e.reason}")
+
+    async def delete_role_binding(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """删除RoleBinding"""
+        try:
+            self.rbac_v1_api.delete_namespaced_role_binding(name=name, namespace=namespace)
+            
+            return {
+                "success": True,
+                "message": f"RoleBinding {name} 删除成功"
+            }
+        except ApiException as e:
+            raise Exception(f"删除RoleBinding失败: {e.reason}")
+
+    async def list_cluster_role_bindings(self, label_selector: str = None) -> List[Dict[str, Any]]:
+        """列出ClusterRoleBinding"""
+        try:
+            cluster_role_bindings = self.rbac_v1_api.list_cluster_role_binding(label_selector=label_selector)
+            
+            result = []
+            for crb in cluster_role_bindings.items:
+                crb_dict = {
+                    "name": crb.metadata.name,
+                    "role_ref": {
+                        "api_group": crb.role_ref.api_group,
+                        "kind": crb.role_ref.kind,
+                        "name": crb.role_ref.name
+                    },
+                    "subjects": [],
+                    "labels": crb.metadata.labels,
+                    "annotations": crb.metadata.annotations,
+                    "creation_timestamp": to_local_time_str(crb.metadata.creation_timestamp),
+                    "uid": crb.metadata.uid
+                }
+                
+                # 转换subjects
+                if crb.subjects:
+                    for subject in crb.subjects:
+                        subject_dict = {
+                            "kind": subject.kind,
+                            "name": subject.name,
+                            "api_group": subject.api_group,
+                            "namespace": subject.namespace
+                        }
+                        crb_dict["subjects"].append(subject_dict)
+                
+                result.append(crb_dict)
+            
+            return result
+        except ApiException as e:
+            raise Exception(f"获取ClusterRoleBinding列表失败: {e.reason}")
+
+    async def get_cluster_role_binding(self, name: str) -> Dict[str, Any]:
+        """获取ClusterRoleBinding详情"""
+        try:
+            crb = self.rbac_v1_api.read_cluster_role_binding(name=name)
+            
+            crb_dict = {
+                "name": crb.metadata.name,
+                "role_ref": {
+                    "api_group": crb.role_ref.api_group,
+                    "kind": crb.role_ref.kind,
+                    "name": crb.role_ref.name
+                },
+                "subjects": [],
+                "labels": crb.metadata.labels,
+                "annotations": crb.metadata.annotations,
+                "creation_timestamp": to_local_time_str(crb.metadata.creation_timestamp),
+                "uid": crb.metadata.uid
+            }
+            
+            # 转换subjects
+            for subject in crb.subjects:
+                subject_dict = {
+                    "kind": subject.kind,
+                    "name": subject.name,
+                    "api_group": subject.api_group,
+                    "namespace": subject.namespace
+                }
+                crb_dict["subjects"].append(subject_dict)
+            
+            return crb_dict
+        except ApiException as e:
+            raise Exception(f"获取ClusterRoleBinding详情失败: {e.reason}")
+
+    async def create_cluster_role_binding(self, name: str = None, role_ref: dict = None, 
+                                        subjects: list = None,
+                                        labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
+        """创建ClusterRoleBinding"""
+        try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                created_crb = self.rbac_v1_api.create_cluster_role_binding(body=resource)
+                
+                return {
+                    "success": True,
+                    "name": created_crb.metadata.name,
+                    "message": f"ClusterRoleBinding {created_crb.metadata.name} 创建成功"
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name:
+                raise ValueError("name参数是必需的")
+            
+            # 转换role_ref
+            role_ref_obj = None
+            if role_ref:
+                role_ref_obj = client.V1RoleRef(
+                    api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
+                    kind=role_ref.get("kind", "ClusterRole"),
+                    name=role_ref.get("name")
+                )
+            
+            # 转换subjects
+            subjects_list = []
+            if subjects:
+                for subject in subjects:
+                    subject_obj = client.RbacV1Subject(
+                        kind=subject.get("kind"),
+                        name=subject.get("name"),
+                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
+                        namespace=subject.get("namespace")
+                    )
+                    subjects_list.append(subject_obj)
+            
+            cluster_role_binding = client.V1ClusterRoleBinding(
+                metadata=client.V1ObjectMeta(
+                    name=name,
+                    labels=labels,
+                    annotations=annotations
+                ),
+                role_ref=role_ref_obj,
+                subjects=subjects_list
+            )
+            
+            created_crb = self.rbac_v1_api.create_cluster_role_binding(body=cluster_role_binding)
+            
+            return {
+                "success": True,
+                "name": created_crb.metadata.name,
+                "message": f"ClusterRoleBinding {name} 创建成功"
+            }
+        except ApiException as e:
+            raise Exception(f"创建ClusterRoleBinding失败: {e.reason}")
+
+    async def update_cluster_role_binding(self, name: str, role_ref: dict = None,
+                                        subjects: list = None,
+                                        labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
+        """更新ClusterRoleBinding"""
+        try:
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                
+                response = self.rbac_v1_api.patch_cluster_role_binding(
+                    name=name,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取现有ClusterRoleBinding
+                existing_crb = self.rbac_v1_api.read_cluster_role_binding(name=name)
+                
+                # 更新role_ref
+                if role_ref is not None:
+                    role_ref_obj = client.V1RoleRef(
+                        api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
+                        kind=role_ref.get("kind", "ClusterRole"),
+                        name=role_ref.get("name")
+                    )
+                    existing_crb.role_ref = role_ref_obj
+                
+                # 更新subjects
+                if subjects is not None:
+                    subjects_list = []
+                    for subject in subjects:
+                        subject_obj = client.RbacV1Subject(
+                            kind=subject.get("kind"),
+                            name=subject.get("name"),
+                            api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
+                            namespace=subject.get("namespace")
+                        )
+                        subjects_list.append(subject_obj)
+                    existing_crb.subjects = subjects_list
+                
+                # 更新标签和注解
+                if labels is not None:
+                    existing_crb.metadata.labels = labels
+                if annotations is not None:
+                    existing_crb.metadata.annotations = annotations
+                
+                response = self.rbac_v1_api.replace_cluster_role_binding(
+                    name=name,
+                    body=existing_crb
+            )
+            
+            return {
+                "success": True,
+                "name": response.metadata.name,
+                "message": f"ClusterRoleBinding {name} 更新成功"
+            }
+        except ApiException as e:
+            raise Exception(f"更新ClusterRoleBinding失败: {e.reason}")
+
+    async def delete_cluster_role_binding(self, name: str) -> Dict[str, Any]:
+        """删除ClusterRoleBinding"""
+        try:
+            self.rbac_v1_api.delete_cluster_role_binding(name=name)
+            
+            return {
+                "success": True,
+                "message": f"ClusterRoleBinding {name} 删除成功"
+            }
+        except ApiException as e:
+            raise Exception(f"删除ClusterRoleBinding失败: {e.reason}")
 
     # ========================== Node 服务层方法 ==========================
 
@@ -3059,10 +4540,24 @@ class KubernetesAPIService:
         except ApiException as e:
             raise Exception(f"获取 Namespace 列表失败: {e.reason}")
 
-    async def create_namespace(self, name: str, labels: Dict[str, str] = None, 
-                        annotations: Dict[str, str] = None) -> Dict[str, Any]:
+    async def create_namespace(self, name: str = None, labels: Dict[str, str] = None, 
+                        annotations: Dict[str, str] = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Namespace"""
         try:
+            # 批量操作模式，传入完整的资源定义
+            if resource:
+                response = self.v1_api.create_namespace(body=resource)
+                
+                return {
+                    "name": response.metadata.name,
+                    "status": "created",
+                    "uid": response.metadata.uid
+                }
+            
+            # 单体操作模式，使用简化参数创建
+            if not name:
+                raise ValueError("name参数是必需的")
+            
             namespace = client.V1Namespace(
                 metadata=client.V1ObjectMeta(
                     name=name,
@@ -3083,46 +4578,61 @@ class KubernetesAPIService:
             raise Exception(f"创建 Namespace 失败: {e.reason}")
 
     async def update_namespace(self, name: str, labels: Dict[str, str] = None, 
-                           annotations: Dict[str, str] = None) -> Dict[str, Any]:
+                           annotations: Dict[str, str] = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Namespace
         
         Args:
             name: Namespace名称
             labels: 标签
             annotations: 注解
+            resource: 完整的资源定义
             
         Returns:
             更新后的Namespace对象
         """
         try:
-            # 获取当前Namespace
-            current_namespace = self.v1_api.read_namespace(name=name)
-            
-            # 更新标签
-            if labels is not None:
-                if current_namespace.metadata.labels is None:
-                    current_namespace.metadata.labels = {}
-                current_namespace.metadata.labels.update(labels)
-            
-            # 更新注解
-            if annotations is not None:
-                if current_namespace.metadata.annotations is None:
-                    current_namespace.metadata.annotations = {}
-                current_namespace.metadata.annotations.update(annotations)
-            
-            # 更新Namespace
-            updated_namespace = self.v1_api.replace_namespace(
+            if resource is not None:
+                # 批量操作模式，传入完整的资源定义
+                body = resource
+                # 确保metadata中有正确的name
+                if 'metadata' not in body:
+                    body['metadata'] = {}
+                body['metadata']['name'] = name
+                
+                response = self.v1_api.patch_namespace(
+                    name=name,
+                    body=body
+                )
+            else:
+                # 单体操作模式，使用简化参数更新
+                # 获取当前Namespace
+                current_namespace = self.v1_api.read_namespace(name=name)
+                
+                # 更新标签
+                if labels is not None:
+                    if current_namespace.metadata.labels is None:
+                        current_namespace.metadata.labels = {}
+                    current_namespace.metadata.labels.update(labels)
+                
+                # 更新注解
+                if annotations is not None:
+                    if current_namespace.metadata.annotations is None:
+                        current_namespace.metadata.annotations = {}
+                    current_namespace.metadata.annotations.update(annotations)
+                
+                # 更新Namespace
+                response = self.v1_api.replace_namespace(
                 name=name,
                 body=current_namespace
             )
             
             return {
-                "name": updated_namespace.metadata.name,
-                "uid": updated_namespace.metadata.uid,
-                "labels": updated_namespace.metadata.labels,
-                "annotations": updated_namespace.metadata.annotations,
-                "status": updated_namespace.status.phase,
-                "creation_timestamp": to_local_time_str(updated_namespace.metadata.creation_timestamp, 8) if updated_namespace.metadata.creation_timestamp else None
+                "name": response.metadata.name,
+                "uid": response.metadata.uid,
+                "labels": response.metadata.labels,
+                "annotations": response.metadata.annotations,
+                "status": response.status.phase,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
             }
             
         except ApiException as e:
@@ -3320,848 +4830,3 @@ class KubernetesAPIService:
             }
         except Exception as e:
             return {"error": str(e)}
-
-    # ==================== ServiceAccount 相关方法 ====================
-
-    async def list_serviceaccounts(self, namespace: str = "default") -> List[Dict[str, Any]]:
-        """列出ServiceAccount"""
-        try:
-            response = self.v1_api.list_namespaced_service_account(namespace=namespace)
-            
-            serviceaccounts = []
-            for item in response.items:
-                serviceaccount_info = {
-                    "name": item.metadata.name,
-                    "namespace": item.metadata.namespace,
-                    "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp),
-                    "labels": item.metadata.labels or {},
-                    "annotations": item.metadata.annotations or {},
-                    "secrets": [secret.name for secret in (item.secrets or [])],
-                    "image_pull_secrets": [secret.name for secret in (item.image_pull_secrets or [])],
-                    "automount_service_account_token": item.automount_service_account_token
-                }
-                serviceaccounts.append(serviceaccount_info)
-            
-            return serviceaccounts
-            
-        except ApiException as e:
-            raise Exception(f"获取ServiceAccount列表失败: {e.reason}")
-
-    async def get_serviceaccount(self, name: str, namespace: str = "default") -> Dict[str, Any]:
-        """获取ServiceAccount详情"""
-        try:
-            response = self.v1_api.read_namespaced_service_account(name=name, namespace=namespace)
-            
-            return {
-                "name": response.metadata.name,
-                "namespace": response.metadata.namespace,
-                "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp),
-                "labels": response.metadata.labels or {},
-                "annotations": response.metadata.annotations or {},
-                "secrets": [secret.name for secret in (response.secrets or [])],
-                "image_pull_secrets": [secret.name for secret in (response.image_pull_secrets or [])],
-                "automount_service_account_token": response.automount_service_account_token
-            }
-            
-        except ApiException as e:
-            if e.status == 404:
-                raise Exception(f"ServiceAccount {name} 在命名空间 {namespace} 中不存在")
-            raise Exception(f"获取ServiceAccount失败: {e.reason}")
-
-    async def create_serviceaccount(self, name: str, namespace: str = "default", 
-                                  labels: Dict[str, str] = None,
-                                  annotations: Dict[str, str] = None,
-                                  secrets: List[str] = None,
-                                  image_pull_secrets: List[str] = None,
-                                  automount_service_account_token: bool = None) -> Dict[str, Any]:
-        """创建ServiceAccount"""
-        try:
-            # 构建ServiceAccount对象
-            body = client.V1ServiceAccount(
-                metadata=client.V1ObjectMeta(
-                    name=name,
-                    namespace=namespace,
-                    labels=labels,
-                    annotations=annotations
-                )
-            )
-            
-            # 设置secrets
-            if secrets:
-                body.secrets = [client.V1ObjectReference(name=secret_name) for secret_name in secrets]
-            
-            # 设置image_pull_secrets
-            if image_pull_secrets:
-                body.image_pull_secrets = [client.V1LocalObjectReference(name=secret_name) for secret_name in image_pull_secrets]
-            
-            # 设置automount_service_account_token
-            if automount_service_account_token is not None:
-                body.automount_service_account_token = automount_service_account_token
-            
-            response = self.v1_api.create_namespaced_service_account(namespace=namespace, body=body)
-            
-            return {
-                "success": True,
-                "message": f"ServiceAccount {name} 创建成功",
-                "serviceaccount": {
-                    "name": response.metadata.name,
-                    "namespace": response.metadata.namespace,
-                    "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp)
-                }
-            }
-            
-        except ApiException as e:
-            raise Exception(f"创建ServiceAccount失败: {e.reason}")
-
-    async def update_serviceaccount(self, name: str, namespace: str = "default",
-                                  labels: Dict[str, str] = None,
-                                  annotations: Dict[str, str] = None,
-                                  secrets: List[str] = None,
-                                  image_pull_secrets: List[str] = None,
-                                  automount_service_account_token: bool = None) -> Dict[str, Any]:
-        """更新ServiceAccount"""
-        try:
-            # 获取现有的ServiceAccount
-            current = self.v1_api.read_namespaced_service_account(name=name, namespace=namespace)
-            
-            # 更新metadata
-            if labels is not None:
-                current.metadata.labels = labels
-            if annotations is not None:
-                current.metadata.annotations = annotations
-            
-            # 更新secrets
-            if secrets is not None:
-                current.secrets = [client.V1ObjectReference(name=secret_name) for secret_name in secrets]
-            
-            # 更新image_pull_secrets
-            if image_pull_secrets is not None:
-                current.image_pull_secrets = [client.V1LocalObjectReference(name=secret_name) for secret_name in image_pull_secrets]
-            
-            # 更新automount_service_account_token
-            if automount_service_account_token is not None:
-                current.automount_service_account_token = automount_service_account_token
-            
-            response = self.v1_api.replace_namespaced_service_account(
-                name=name,
-                namespace=namespace,
-                body=current
-            )
-            
-            return {
-                "success": True,
-                "message": f"ServiceAccount {name} 更新成功",
-                "serviceaccount": {
-                    "name": response.metadata.name,
-                    "namespace": response.metadata.namespace,
-                    "uid": response.metadata.uid
-                }
-            }
-            
-        except ApiException as e:
-            raise Exception(f"更新ServiceAccount失败: {e.reason}")
-
-    async def delete_serviceaccount(self, name: str, namespace: str = "default",
-                                  grace_period_seconds: int = None) -> Dict[str, Any]:
-        """删除ServiceAccount"""
-        try:
-            delete_options = client.V1DeleteOptions()
-            if grace_period_seconds is not None:
-                delete_options.grace_period_seconds = grace_period_seconds
-            
-            self.v1_api.delete_namespaced_service_account(
-                name=name,
-                namespace=namespace,
-                body=delete_options
-            )
-            
-            return {
-                "success": True,
-                "message": f"ServiceAccount {name} 删除成功"
-            }
-            
-        except ApiException as e:
-            raise Exception(f"删除ServiceAccount失败: {e.reason}")
-
-    # ========================== RBAC 服务层方法 ==========================
-
-    async def list_roles(self, namespace: str = "default", label_selector: str = None) -> List[Dict[str, Any]]:
-        """列出Role"""
-        try:
-            roles = self.rbac_v1_api.list_namespaced_role(
-                namespace=namespace,
-                label_selector=label_selector
-            )
-            
-            result = []
-            for role in roles.items:
-                role_dict = {
-                    "name": role.metadata.name,
-                    "namespace": role.metadata.namespace,
-                    "rules": [],
-                    "labels": role.metadata.labels,
-                    "annotations": role.metadata.annotations,
-                    "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
-                    "uid": role.metadata.uid
-                }
-                
-                # 转换规则
-                for rule in role.rules:
-                    rule_dict = {
-                        "api_groups": rule.api_groups,
-                        "resources": rule.resources,
-                        "verbs": rule.verbs,
-                        "resource_names": rule.resource_names,
-                        "non_resource_urls": rule.non_resource_urls
-                    }
-                    role_dict["rules"].append(rule_dict)
-                
-                result.append(role_dict)
-            
-            return result
-        except ApiException as e:
-            raise Exception(f"获取Role列表失败: {e.reason}")
-
-    async def get_role(self, name: str, namespace: str = "default") -> Dict[str, Any]:
-        """获取Role详情"""
-        try:
-            role = self.rbac_v1_api.read_namespaced_role(name=name, namespace=namespace)
-            
-            role_dict = {
-                "name": role.metadata.name,
-                "namespace": role.metadata.namespace,
-                "rules": [],
-                "labels": role.metadata.labels,
-                "annotations": role.metadata.annotations,
-                "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
-                "uid": role.metadata.uid
-            }
-            
-            # 转换规则
-            for rule in role.rules:
-                rule_dict = {
-                    "api_groups": rule.api_groups,
-                    "resources": rule.resources,
-                    "verbs": rule.verbs,
-                    "resource_names": rule.resource_names,
-                    "non_resource_urls": rule.non_resource_urls
-                }
-                role_dict["rules"].append(rule_dict)
-            
-            return role_dict
-        except ApiException as e:
-            raise Exception(f"获取Role详情失败: {e.reason}")
-
-    async def create_role(self, name: str, namespace: str = "default", rules: list = None,
-                         labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """创建Role"""
-        try:
-            # 转换规则
-            role_rules = []
-            if rules:
-                for rule in rules:
-                    role_rule = client.V1PolicyRule(
-                        api_groups=rule.get("api_groups", []),
-                        resources=rule.get("resources", []),
-                        verbs=rule.get("verbs", []),
-                        resource_names=rule.get("resource_names", []),
-                        non_resource_urls=rule.get("non_resource_urls", [])
-                    )
-                    role_rules.append(role_rule)
-            
-            role = client.V1Role(
-                metadata=client.V1ObjectMeta(
-                    name=name,
-                    namespace=namespace,
-                    labels=labels,
-                    annotations=annotations
-                ),
-                rules=role_rules
-            )
-            
-            created_role = self.rbac_v1_api.create_namespaced_role(
-                namespace=namespace,
-                body=role
-            )
-            
-            return {
-                "success": True,
-                "name": created_role.metadata.name,
-                "namespace": created_role.metadata.namespace,
-                "message": f"Role {name} 创建成功"
-            }
-        except ApiException as e:
-            raise Exception(f"创建Role失败: {e.reason}")
-
-    async def update_role(self, name: str, namespace: str = "default", rules: list = None,
-                         labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """更新Role"""
-        try:
-            # 获取现有Role
-            existing_role = self.rbac_v1_api.read_namespaced_role(name=name, namespace=namespace)
-            
-            # 更新规则
-            if rules is not None:
-                role_rules = []
-                for rule in rules:
-                    role_rule = client.V1PolicyRule(
-                        api_groups=rule.get("api_groups", []),
-                        resources=rule.get("resources", []),
-                        verbs=rule.get("verbs", []),
-                        resource_names=rule.get("resource_names", []),
-                        non_resource_urls=rule.get("non_resource_urls", [])
-                    )
-                    role_rules.append(role_rule)
-                existing_role.rules = role_rules
-            
-            # 更新标签和注解
-            if labels is not None:
-                existing_role.metadata.labels = labels
-            if annotations is not None:
-                existing_role.metadata.annotations = annotations
-            
-            updated_role = self.rbac_v1_api.replace_namespaced_role(
-                name=name,
-                namespace=namespace,
-                body=existing_role
-            )
-            
-            return {
-                "success": True,
-                "name": updated_role.metadata.name,
-                "namespace": updated_role.metadata.namespace,
-                "message": f"Role {name} 更新成功"
-            }
-        except ApiException as e:
-            raise Exception(f"更新Role失败: {e.reason}")
-
-    async def delete_role(self, name: str, namespace: str = "default") -> Dict[str, Any]:
-        """删除Role"""
-        try:
-            self.rbac_v1_api.delete_namespaced_role(name=name, namespace=namespace)
-            
-            return {
-                "success": True,
-                "message": f"Role {name} 删除成功"
-            }
-        except ApiException as e:
-            raise Exception(f"删除Role失败: {e.reason}")
-
-    async def list_cluster_roles(self, label_selector: str = None) -> List[Dict[str, Any]]:
-        """列出ClusterRole"""
-        try:
-            cluster_roles = self.rbac_v1_api.list_cluster_role(label_selector=label_selector)
-            
-            result = []
-            for role in cluster_roles.items:
-                role_dict = {
-                    "name": role.metadata.name,
-                    "rules": [],
-                    "labels": role.metadata.labels,
-                    "annotations": role.metadata.annotations,
-                    "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
-                    "uid": role.metadata.uid
-                }
-                
-                # 转换规则
-                for rule in role.rules:
-                    rule_dict = {
-                        "api_groups": rule.api_groups,
-                        "resources": rule.resources,
-                        "verbs": rule.verbs,
-                        "resource_names": rule.resource_names,
-                        "non_resource_urls": rule.non_resource_urls
-                    }
-                    role_dict["rules"].append(rule_dict)
-                
-                result.append(role_dict)
-            
-            return result
-        except ApiException as e:
-            raise Exception(f"获取ClusterRole列表失败: {e.reason}")
-
-    async def get_cluster_role(self, name: str) -> Dict[str, Any]:
-        """获取ClusterRole详情"""
-        try:
-            role = self.rbac_v1_api.read_cluster_role(name=name)
-            
-            role_dict = {
-                "name": role.metadata.name,
-                "rules": [],
-                "labels": role.metadata.labels,
-                "annotations": role.metadata.annotations,
-                "creation_timestamp": to_local_time_str(role.metadata.creation_timestamp),
-                "uid": role.metadata.uid
-            }
-            
-            # 转换规则
-            for rule in role.rules:
-                rule_dict = {
-                    "api_groups": rule.api_groups,
-                    "resources": rule.resources,
-                    "verbs": rule.verbs,
-                    "resource_names": rule.resource_names,
-                    "non_resource_urls": rule.non_resource_urls
-                }
-                role_dict["rules"].append(rule_dict)
-            
-            return role_dict
-        except ApiException as e:
-            raise Exception(f"获取ClusterRole详情失败: {e.reason}")
-
-    async def create_cluster_role(self, name: str, rules: list = None,
-                                labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """创建ClusterRole"""
-        try:
-            # 转换规则
-            role_rules = []
-            if rules:
-                for rule in rules:
-                    role_rule = client.V1PolicyRule(
-                        api_groups=rule.get("api_groups", []),
-                        resources=rule.get("resources", []),
-                        verbs=rule.get("verbs", []),
-                        resource_names=rule.get("resource_names", []),
-                        non_resource_urls=rule.get("non_resource_urls", [])
-                    )
-                    role_rules.append(role_rule)
-            
-            cluster_role = client.V1ClusterRole(
-                metadata=client.V1ObjectMeta(
-                    name=name,
-                    labels=labels,
-                    annotations=annotations
-                ),
-                rules=role_rules
-            )
-            
-            created_role = self.rbac_v1_api.create_cluster_role(body=cluster_role)
-            
-            return {
-                "success": True,
-                "name": created_role.metadata.name,
-                "message": f"ClusterRole {name} 创建成功"
-            }
-        except ApiException as e:
-            raise Exception(f"创建ClusterRole失败: {e.reason}")
-
-    async def update_cluster_role(self, name: str, rules: list = None,
-                                labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """更新ClusterRole"""
-        try:
-            # 获取现有ClusterRole
-            existing_role = self.rbac_v1_api.read_cluster_role(name=name)
-            
-            # 更新规则
-            if rules is not None:
-                role_rules = []
-                for rule in rules:
-                    role_rule = client.V1PolicyRule(
-                        api_groups=rule.get("api_groups", []),
-                        resources=rule.get("resources", []),
-                        verbs=rule.get("verbs", []),
-                        resource_names=rule.get("resource_names", []),
-                        non_resource_urls=rule.get("non_resource_urls", [])
-                    )
-                    role_rules.append(role_rule)
-                existing_role.rules = role_rules
-            
-            # 更新标签和注解
-            if labels is not None:
-                existing_role.metadata.labels = labels
-            if annotations is not None:
-                existing_role.metadata.annotations = annotations
-            
-            updated_role = self.rbac_v1_api.replace_cluster_role(
-                name=name,
-                body=existing_role
-            )
-            
-            return {
-                "success": True,
-                "name": updated_role.metadata.name,
-                "message": f"ClusterRole {name} 更新成功"
-            }
-        except ApiException as e:
-            raise Exception(f"更新ClusterRole失败: {e.reason}")
-
-    async def delete_cluster_role(self, name: str) -> Dict[str, Any]:
-        """删除ClusterRole"""
-        try:
-            self.rbac_v1_api.delete_cluster_role(name=name)
-            
-            return {
-                "success": True,
-                "message": f"ClusterRole {name} 删除成功"
-            }
-        except ApiException as e:
-            raise Exception(f"删除ClusterRole失败: {e.reason}")
-
-    async def list_role_bindings(self, namespace: str = "default", label_selector: str = None) -> List[Dict[str, Any]]:
-        """列出RoleBinding"""
-        try:
-            role_bindings = self.rbac_v1_api.list_namespaced_role_binding(
-                namespace=namespace,
-                label_selector=label_selector
-            )
-            
-            result = []
-            for rb in role_bindings.items:
-                rb_dict = {
-                    "name": rb.metadata.name,
-                    "namespace": rb.metadata.namespace,
-                    "role_ref": {
-                        "api_group": rb.role_ref.api_group,
-                        "kind": rb.role_ref.kind,
-                        "name": rb.role_ref.name
-                    },
-                    "subjects": [],
-                    "labels": rb.metadata.labels,
-                    "annotations": rb.metadata.annotations,
-                    "creation_timestamp": to_local_time_str(rb.metadata.creation_timestamp),
-                    "uid": rb.metadata.uid
-                }
-                
-                # 转换subjects
-                for subject in rb.subjects:
-                    subject_dict = {
-                        "kind": subject.kind,
-                        "name": subject.name,
-                        "api_group": subject.api_group,
-                        "namespace": subject.namespace
-                    }
-                    rb_dict["subjects"].append(subject_dict)
-                
-                result.append(rb_dict)
-            
-            return result
-        except ApiException as e:
-            raise Exception(f"获取RoleBinding列表失败: {e.reason}")
-
-    async def get_role_binding(self, name: str, namespace: str = "default") -> Dict[str, Any]:
-        """获取RoleBinding详情"""
-        try:
-            rb = self.rbac_v1_api.read_namespaced_role_binding(name=name, namespace=namespace)
-            
-            rb_dict = {
-                "name": rb.metadata.name,
-                "namespace": rb.metadata.namespace,
-                "role_ref": {
-                    "api_group": rb.role_ref.api_group,
-                    "kind": rb.role_ref.kind,
-                    "name": rb.role_ref.name
-                },
-                "subjects": [],
-                "labels": rb.metadata.labels,
-                "annotations": rb.metadata.annotations,
-                "creation_timestamp": to_local_time_str(rb.metadata.creation_timestamp),
-                "uid": rb.metadata.uid
-            }
-            
-            # 转换subjects
-            for subject in rb.subjects:
-                subject_dict = {
-                    "kind": subject.kind,
-                    "name": subject.name,
-                    "api_group": subject.api_group,
-                    "namespace": subject.namespace
-                }
-                rb_dict["subjects"].append(subject_dict)
-            
-            return rb_dict
-        except ApiException as e:
-            raise Exception(f"获取RoleBinding详情失败: {e.reason}")
-
-    async def create_role_binding(self, name: str, namespace: str = "default", 
-                                role_ref: dict = None, subjects: list = None,
-                                labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """创建RoleBinding"""
-        try:
-            # 转换role_ref
-            role_ref_obj = None
-            if role_ref:
-                role_ref_obj = client.V1RoleRef(
-                    api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
-                    kind=role_ref.get("kind", "Role"),
-                    name=role_ref.get("name")
-                )
-            
-            # 转换subjects
-            subjects_list = []
-            if subjects:
-                for subject in subjects:
-                    subject_obj = client.V1Subject(
-                        kind=subject.get("kind"),
-                        name=subject.get("name"),
-                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
-                        namespace=subject.get("namespace")
-                    )
-                    subjects_list.append(subject_obj)
-            
-            role_binding = client.V1RoleBinding(
-                metadata=client.V1ObjectMeta(
-                    name=name,
-                    namespace=namespace,
-                    labels=labels,
-                    annotations=annotations
-                ),
-                role_ref=role_ref_obj,
-                subjects=subjects_list
-            )
-            
-            created_rb = self.rbac_v1_api.create_namespaced_role_binding(
-                namespace=namespace,
-                body=role_binding
-            )
-            
-            return {
-                "success": True,
-                "name": created_rb.metadata.name,
-                "namespace": created_rb.metadata.namespace,
-                "message": f"RoleBinding {name} 创建成功"
-            }
-        except ApiException as e:
-            raise Exception(f"创建RoleBinding失败: {e.reason}")
-
-    async def update_role_binding(self, name: str, namespace: str = "default",
-                                role_ref: dict = None, subjects: list = None,
-                                labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """更新RoleBinding"""
-        try:
-            # 获取现有RoleBinding
-            existing_rb = self.rbac_v1_api.read_namespaced_role_binding(name=name, namespace=namespace)
-            
-            # 更新role_ref
-            if role_ref is not None:
-                role_ref_obj = client.V1RoleRef(
-                    api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
-                    kind=role_ref.get("kind", "Role"),
-                    name=role_ref.get("name")
-                )
-                existing_rb.role_ref = role_ref_obj
-            
-            # 更新subjects
-            if subjects is not None:
-                subjects_list = []
-                for subject in subjects:
-                    subject_obj = client.V1Subject(
-                        kind=subject.get("kind"),
-                        name=subject.get("name"),
-                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
-                        namespace=subject.get("namespace")
-                    )
-                    subjects_list.append(subject_obj)
-                existing_rb.subjects = subjects_list
-            
-            # 更新标签和注解
-            if labels is not None:
-                existing_rb.metadata.labels = labels
-            if annotations is not None:
-                existing_rb.metadata.annotations = annotations
-            
-            updated_rb = self.rbac_v1_api.replace_namespaced_role_binding(
-                name=name,
-                namespace=namespace,
-                body=existing_rb
-            )
-            
-            return {
-                "success": True,
-                "name": updated_rb.metadata.name,
-                "namespace": updated_rb.metadata.namespace,
-                "message": f"RoleBinding {name} 更新成功"
-            }
-        except ApiException as e:
-            raise Exception(f"更新RoleBinding失败: {e.reason}")
-
-    async def delete_role_binding(self, name: str, namespace: str = "default") -> Dict[str, Any]:
-        """删除RoleBinding"""
-        try:
-            self.rbac_v1_api.delete_namespaced_role_binding(name=name, namespace=namespace)
-            
-            return {
-                "success": True,
-                "message": f"RoleBinding {name} 删除成功"
-            }
-        except ApiException as e:
-            raise Exception(f"删除RoleBinding失败: {e.reason}")
-
-    async def list_cluster_role_bindings(self, label_selector: str = None) -> List[Dict[str, Any]]:
-        """列出ClusterRoleBinding"""
-        try:
-            cluster_role_bindings = self.rbac_v1_api.list_cluster_role_binding(label_selector=label_selector)
-            
-            result = []
-            for crb in cluster_role_bindings.items:
-                crb_dict = {
-                    "name": crb.metadata.name,
-                    "role_ref": {
-                        "api_group": crb.role_ref.api_group,
-                        "kind": crb.role_ref.kind,
-                        "name": crb.role_ref.name
-                    },
-                    "subjects": [],
-                    "labels": crb.metadata.labels,
-                    "annotations": crb.metadata.annotations,
-                    "creation_timestamp": to_local_time_str(crb.metadata.creation_timestamp),
-                    "uid": crb.metadata.uid
-                }
-                
-                # 转换subjects
-                for subject in crb.subjects:
-                    subject_dict = {
-                        "kind": subject.kind,
-                        "name": subject.name,
-                        "api_group": subject.api_group,
-                        "namespace": subject.namespace
-                    }
-                    crb_dict["subjects"].append(subject_dict)
-                
-                result.append(crb_dict)
-            
-            return result
-        except ApiException as e:
-            raise Exception(f"获取ClusterRoleBinding列表失败: {e.reason}")
-
-    async def get_cluster_role_binding(self, name: str) -> Dict[str, Any]:
-        """获取ClusterRoleBinding详情"""
-        try:
-            crb = self.rbac_v1_api.read_cluster_role_binding(name=name)
-            
-            crb_dict = {
-                "name": crb.metadata.name,
-                "role_ref": {
-                    "api_group": crb.role_ref.api_group,
-                    "kind": crb.role_ref.kind,
-                    "name": crb.role_ref.name
-                },
-                "subjects": [],
-                "labels": crb.metadata.labels,
-                "annotations": crb.metadata.annotations,
-                "creation_timestamp": to_local_time_str(crb.metadata.creation_timestamp),
-                "uid": crb.metadata.uid
-            }
-            
-            # 转换subjects
-            for subject in crb.subjects:
-                subject_dict = {
-                    "kind": subject.kind,
-                    "name": subject.name,
-                    "api_group": subject.api_group,
-                    "namespace": subject.namespace
-                }
-                crb_dict["subjects"].append(subject_dict)
-            
-            return crb_dict
-        except ApiException as e:
-            raise Exception(f"获取ClusterRoleBinding详情失败: {e.reason}")
-
-    async def create_cluster_role_binding(self, name: str, role_ref: dict = None, 
-                                        subjects: list = None,
-                                        labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """创建ClusterRoleBinding"""
-        try:
-            # 转换role_ref
-            role_ref_obj = None
-            if role_ref:
-                role_ref_obj = client.V1RoleRef(
-                    api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
-                    kind=role_ref.get("kind", "ClusterRole"),
-                    name=role_ref.get("name")
-                )
-            
-            # 转换subjects
-            subjects_list = []
-            if subjects:
-                for subject in subjects:
-                    subject_obj = client.V1Subject(
-                        kind=subject.get("kind"),
-                        name=subject.get("name"),
-                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
-                        namespace=subject.get("namespace")
-                    )
-                    subjects_list.append(subject_obj)
-            
-            cluster_role_binding = client.V1ClusterRoleBinding(
-                metadata=client.V1ObjectMeta(
-                    name=name,
-                    labels=labels,
-                    annotations=annotations
-                ),
-                role_ref=role_ref_obj,
-                subjects=subjects_list
-            )
-            
-            created_crb = self.rbac_v1_api.create_cluster_role_binding(body=cluster_role_binding)
-            
-            return {
-                "success": True,
-                "name": created_crb.metadata.name,
-                "message": f"ClusterRoleBinding {name} 创建成功"
-            }
-        except ApiException as e:
-            raise Exception(f"创建ClusterRoleBinding失败: {e.reason}")
-
-    async def update_cluster_role_binding(self, name: str, role_ref: dict = None,
-                                        subjects: list = None,
-                                        labels: dict = None, annotations: dict = None) -> Dict[str, Any]:
-        """更新ClusterRoleBinding"""
-        try:
-            # 获取现有ClusterRoleBinding
-            existing_crb = self.rbac_v1_api.read_cluster_role_binding(name=name)
-            
-            # 更新role_ref
-            if role_ref is not None:
-                role_ref_obj = client.V1RoleRef(
-                    api_group=role_ref.get("api_group", "rbac.authorization.k8s.io"),
-                    kind=role_ref.get("kind", "ClusterRole"),
-                    name=role_ref.get("name")
-                )
-                existing_crb.role_ref = role_ref_obj
-            
-            # 更新subjects
-            if subjects is not None:
-                subjects_list = []
-                for subject in subjects:
-                    subject_obj = client.V1Subject(
-                        kind=subject.get("kind"),
-                        name=subject.get("name"),
-                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
-                        namespace=subject.get("namespace")
-                    )
-                    subjects_list.append(subject_obj)
-                existing_crb.subjects = subjects_list
-            
-            # 更新标签和注解
-            if labels is not None:
-                existing_crb.metadata.labels = labels
-            if annotations is not None:
-                existing_crb.metadata.annotations = annotations
-            
-            updated_crb = self.rbac_v1_api.replace_cluster_role_binding(
-                name=name,
-                body=existing_crb
-            )
-            
-            return {
-                "success": True,
-                "name": updated_crb.metadata.name,
-                "message": f"ClusterRoleBinding {name} 更新成功"
-            }
-        except ApiException as e:
-            raise Exception(f"更新ClusterRoleBinding失败: {e.reason}")
-
-    async def delete_cluster_role_binding(self, name: str) -> Dict[str, Any]:
-        """删除ClusterRoleBinding"""
-        try:
-            self.rbac_v1_api.delete_cluster_role_binding(name=name)
-            
-            return {
-                "success": True,
-                "message": f"ClusterRoleBinding {name} 删除成功"
-            }
-        except ApiException as e:
-            raise Exception(f"删除ClusterRoleBinding失败: {e.reason}")

@@ -5,7 +5,7 @@
 
 import json
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from services.k8s_advanced_service import KubernetesAdvancedService
 
 
@@ -14,7 +14,40 @@ from . import mcp
 
 
 @mcp.tool()
-async def batch_create_resources(resources: str, namespace: str = "default", 
+async def batch_list_resources(resource_types: Union[str, List[str]], namespace: str = "default") -> str:
+    """批量查看资源
+    
+    Args:
+        resource_types: JSON格式的资源类型列表或单个资源类型
+        namespace: 命名空间
+    
+    Returns:
+        批量查看结果
+    """
+    try:
+        if isinstance(resource_types, str):
+            try:
+                resource_types_list = json.loads(resource_types)
+            except:
+                # 如果不是JSON，则当作单个资源类型
+                resource_types_list = [resource_types]
+        else:
+            resource_types_list = resource_types
+        
+        if not isinstance(resource_types_list, list):
+            resource_types_list = [resource_types_list]
+        
+        service = KubernetesAdvancedService()
+        result = await service.batch_list_resources(resource_types_list, namespace)
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def batch_create_resources(resources: Union[str, List[Dict]], namespace: str = "default", 
                                rollback_on_failure: bool = True) -> str:
     """批量创建资源
     
@@ -71,7 +104,7 @@ async def batch_create_resources(resources: str, namespace: str = "default",
 
 
 @mcp.tool()
-async def batch_update_resources(resources: str, namespace: str = "default") -> str:
+async def batch_update_resources(resources: Union[str, List[Dict]], namespace: str = "default") -> str:
     """批量更新资源
     
     Args:
@@ -113,7 +146,7 @@ async def batch_update_resources(resources: str, namespace: str = "default") -> 
 
 
 @mcp.tool()
-async def batch_delete_resources(resources: str, namespace: str = "default", 
+async def batch_delete_resources(resources: Union[str, List[Dict]], namespace: str = "default", 
                                grace_period_seconds: int = None) -> str:
     """批量删除资源
     
@@ -153,4 +186,4 @@ async def batch_delete_resources(resources: str, namespace: str = "default",
         return json.dumps(result, ensure_ascii=False, indent=2)
         
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2) 
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)

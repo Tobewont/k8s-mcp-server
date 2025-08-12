@@ -8,7 +8,7 @@ import yaml
 import os
 import asyncio
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from services.k8s_api_service import KubernetesAPIService
 from config import DATA_DIR, BACKUP_DIR_NAME
 
@@ -20,12 +20,147 @@ class KubernetesAdvancedService:
     
     def __init__(self):
         self.k8s_service = KubernetesAPIService()
+        self.k8s_service.load_config()
         self.backup_dir = os.path.join(DATA_DIR, BACKUP_DIR_NAME)
         os.makedirs(self.backup_dir, exist_ok=True)
         self.operation_history = []
     
     # ==================== 批量操作相关方法 ====================
     
+    def _get_resource_operation(self, resource_type: str, operation: str, namespace: str = "default"):
+        """获取资源操作方法的统一接口"""
+        resource_type = resource_type.lower()
+        
+        # 列表操作映射
+        list_operations = {
+            "deployment": lambda: self.k8s_service.list_deployments(namespace=namespace),
+            "statefulset": lambda: self.k8s_service.list_statefulsets(namespace=namespace),
+            "daemonset": lambda: self.k8s_service.list_daemonsets(namespace=namespace),
+            "service": lambda: self.k8s_service.list_services(namespace=namespace),
+            "configmap": lambda: self.k8s_service.list_configmaps(namespace=namespace),
+            "secret": lambda: self.k8s_service.list_secrets(namespace=namespace),
+            "job": lambda: self.k8s_service.list_jobs(namespace=namespace),
+            "cronjob": lambda: self.k8s_service.list_cronjobs(namespace=namespace),
+            "ingress": lambda: self.k8s_service.list_ingresses(namespace=namespace),
+            "storageclass": lambda: self.k8s_service.list_storageclasses(),
+            "persistentvolume": lambda: self.k8s_service.list_persistentvolumes(),
+            "persistentvolumeclaim": lambda: self.k8s_service.list_persistentvolumeclaims(namespace=namespace),
+            "role": lambda: self.k8s_service.list_roles(namespace=namespace),
+            "clusterrole": lambda: self.k8s_service.list_cluster_roles(),
+            "rolebinding": lambda: self.k8s_service.list_role_bindings(namespace=namespace),
+            "clusterrolebinding": lambda: self.k8s_service.list_cluster_role_bindings(),
+            "serviceaccount": lambda: self.k8s_service.list_serviceaccounts(namespace=namespace),
+            "namespace": lambda: self.k8s_service.list_namespaces(),
+            "pod": lambda: self.k8s_service.list_pods(namespace=namespace),
+            "node": lambda: self.k8s_service.list_nodes(),
+        }
+        
+        # 创建操作映射
+        create_operations = {
+            "deployment": lambda resource: self.k8s_service.create_deployment(resource=resource, namespace=namespace),
+            "statefulset": lambda resource: self.k8s_service.create_statefulset(resource=resource, namespace=namespace),
+            "daemonset": lambda resource: self.k8s_service.create_daemonset(resource=resource, namespace=namespace),
+            "service": lambda resource: self.k8s_service.create_service(resource=resource, namespace=namespace),
+            "configmap": lambda resource: self.k8s_service.create_configmap(resource=resource, namespace=namespace),
+            "secret": lambda resource: self.k8s_service.create_secret(resource=resource, namespace=namespace),
+            "job": lambda resource: self.k8s_service.create_job(resource=resource, namespace=namespace),
+            "cronjob": lambda resource: self.k8s_service.create_cronjob(resource=resource, namespace=namespace),
+            "ingress": lambda resource: self.k8s_service.create_ingress(resource=resource, namespace=namespace),
+            "storageclass": lambda resource: self.k8s_service.create_storageclass(resource=resource),
+            "persistentvolume": lambda resource: self.k8s_service.create_persistentvolume(resource=resource),
+            "persistentvolumeclaim": lambda resource: self.k8s_service.create_persistentvolumeclaim(resource=resource, namespace=namespace),
+            "role": lambda resource: self.k8s_service.create_role(resource=resource, namespace=namespace),
+            "clusterrole": lambda resource: self.k8s_service.create_cluster_role(resource=resource),
+            "rolebinding": lambda resource: self.k8s_service.create_role_binding(resource=resource, namespace=namespace),
+            "clusterrolebinding": lambda resource: self.k8s_service.create_cluster_role_binding(resource=resource),
+            "serviceaccount": lambda resource: self.k8s_service.create_serviceaccount(resource=resource, namespace=namespace),
+            "namespace": lambda resource: self.k8s_service.create_namespace(resource=resource),
+        }
+        
+        # 更新操作映射
+        update_operations = {
+            "deployment": lambda name, resource: self.k8s_service.update_deployment(name=name, namespace=namespace, resource=resource),
+            "statefulset": lambda name, resource: self.k8s_service.update_statefulset(name=name, namespace=namespace, resource=resource),
+            "daemonset": lambda name, resource: self.k8s_service.update_daemonset(name=name, namespace=namespace, resource=resource),
+            "service": lambda name, resource: self.k8s_service.update_service(name=name, namespace=namespace, resource=resource),
+            "configmap": lambda name, resource: self.k8s_service.update_configmap(name=name, namespace=namespace, resource=resource),
+            "secret": lambda name, resource: self.k8s_service.update_secret(name=name, namespace=namespace, resource=resource),
+            "job": lambda name, resource: self.k8s_service.update_job(name=name, namespace=namespace, resource=resource),
+            "cronjob": lambda name, resource: self.k8s_service.update_cronjob(name=name, namespace=namespace, resource=resource),
+            "ingress": lambda name, resource: self.k8s_service.update_ingress(name=name, namespace=namespace, resource=resource),
+            "storageclass": lambda name, resource: self.k8s_service.update_storageclass(name=name, resource=resource),
+            "persistentvolume": lambda name, resource: self.k8s_service.update_persistentvolume(name=name, resource=resource),
+            "persistentvolumeclaim": lambda name, resource: self.k8s_service.update_persistentvolumeclaim(name=name, namespace=namespace, resource=resource),
+            "role": lambda name, resource: self.k8s_service.update_role(name=name, namespace=namespace, resource=resource),
+            "clusterrole": lambda name, resource: self.k8s_service.update_cluster_role(name=name, resource=resource),
+            "rolebinding": lambda name, resource: self.k8s_service.update_role_binding(name=name, namespace=namespace, resource=resource),
+            "clusterrolebinding": lambda name, resource: self.k8s_service.update_cluster_role_binding(name=name, resource=resource),
+            "serviceaccount": lambda name, resource: self.k8s_service.update_serviceaccount(name=name, namespace=namespace, resource=resource),
+            "namespace": lambda name, resource: self.k8s_service.update_namespace(name=name, resource=resource),
+        }
+        
+        # 删除操作映射（带grace_period_seconds支持）
+        delete_operations = {
+            "deployment": lambda name, grace: self.k8s_service.delete_deployment(name=name, namespace=namespace, grace_period_seconds=grace),
+            "statefulset": lambda name, grace: self.k8s_service.delete_statefulset(name=name, namespace=namespace, grace_period_seconds=grace),
+            "daemonset": lambda name, grace: self.k8s_service.delete_daemonset(name=name, namespace=namespace),
+            "service": lambda name, grace: self.k8s_service.delete_service(name=name, namespace=namespace),
+            "configmap": lambda name, grace: self.k8s_service.delete_configmap(name=name, namespace=namespace),
+            "secret": lambda name, grace: self.k8s_service.delete_secret(name=name, namespace=namespace),
+            "job": lambda name, grace: self.k8s_service.delete_job(name=name, namespace=namespace),
+            "cronjob": lambda name, grace: self.k8s_service.delete_cronjob(name=name, namespace=namespace),
+            "ingress": lambda name, grace: self.k8s_service.delete_ingress(name=name, namespace=namespace),
+            "storageclass": lambda name, grace: self.k8s_service.delete_storageclass(name=name),
+            "persistentvolume": lambda name, grace: self.k8s_service.delete_persistentvolume(name=name),
+            "persistentvolumeclaim": lambda name, grace: self.k8s_service.delete_persistentvolumeclaim(name=name, namespace=namespace),
+            "role": lambda name, grace: self.k8s_service.delete_role(name=name, namespace=namespace),
+            "clusterrole": lambda name, grace: self.k8s_service.delete_cluster_role(name=name),
+            "rolebinding": lambda name, grace: self.k8s_service.delete_role_binding(name=name, namespace=namespace),
+            "clusterrolebinding": lambda name, grace: self.k8s_service.delete_cluster_role_binding(name=name),
+            "serviceaccount": lambda name, grace: self.k8s_service.delete_serviceaccount(name=name, namespace=namespace, grace_period_seconds=grace),
+            "namespace": lambda name, grace: self.k8s_service.delete_namespace(name=name),
+            "pod": lambda name, grace: self.k8s_service.delete_pod(name=name, namespace=namespace, grace_period_seconds=grace),
+        }
+        
+        operations_map = {
+            "list": list_operations,
+            "create": create_operations,
+            "update": update_operations,
+            "delete": delete_operations
+        }
+        
+        if operation not in operations_map:
+            raise ValueError(f"不支持的操作类型: {operation}")
+        
+        if resource_type not in operations_map[operation]:
+            raise ValueError(f"资源类型 {resource_type} 不支持 {operation} 操作")
+        
+        return operations_map[operation][resource_type]
+
+    async def batch_list_resources(self, resource_types: List[str], namespace: str = "default") -> Dict:
+        """批量查看资源"""
+        results = {"success": [], "failed": [], "total": len(resource_types)}
+        
+        for resource_type in resource_types:
+            try:
+                resource_type = resource_type.lower()
+                operation_func = self._get_resource_operation(resource_type, "list", namespace)
+                result = await operation_func()
+                
+                results["success"].append({
+                    "resource_type": resource_type,
+                    "count": len(result) if isinstance(result, list) else 0,
+                    "items": result
+                })
+                
+            except Exception as e:
+                results["failed"].append({
+                    "resource_type": resource_type,
+                    "error": str(e)
+                })
+        
+        return results
+
     async def batch_create_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
         """批量创建k8s资源"""
         results = {"success": [], "failed": [], "total": len(resources)}
@@ -35,45 +170,8 @@ class KubernetesAdvancedService:
                 resource_type = resource.get("kind", "").lower()
                 resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
-                # 根据资源类型调用相应的创建方法
-                if resource_type == "deployment":
-                    result = await self.k8s_service.create_deployment(**resource["spec"])
-                elif resource_type == "statefulset":
-                    result = await self.k8s_service.create_statefulset(**resource["spec"])
-                elif resource_type == "daemonset":
-                    result = await self.k8s_service.create_daemonset(**resource["spec"])
-                elif resource_type == "service":
-                    result = await self.k8s_service.create_service(**resource["spec"])
-                elif resource_type == "configmap":
-                    result = await self.k8s_service.create_configmap(**resource["spec"])
-                elif resource_type == "secret":
-                    result = await self.k8s_service.create_secret(**resource["spec"])
-                elif resource_type == "job":
-                    result = await self.k8s_service.create_job(**resource["spec"])
-                elif resource_type == "cronjob":
-                    result = await self.k8s_service.create_cronjob(**resource["spec"])
-                elif resource_type == "ingress":
-                    result = await self.k8s_service.create_ingress(**resource["spec"])
-                elif resource_type == "storageclass":
-                    result = await self.k8s_service.create_storageclass(**resource["spec"])
-                elif resource_type == "persistentvolume":
-                    result = await self.k8s_service.create_persistentvolume(**resource["spec"])
-                elif resource_type == "persistentvolumeclaim":
-                    result = await self.k8s_service.create_persistentvolumeclaim(**resource["spec"])
-                elif resource_type == "role":
-                    result = await self.k8s_service.create_role(**resource["spec"])
-                elif resource_type == "clusterrole":
-                    result = await self.k8s_service.create_cluster_role(**resource["spec"])
-                elif resource_type == "rolebinding":
-                    result = await self.k8s_service.create_role_binding(**resource["spec"])
-                elif resource_type == "clusterrolebinding":
-                    result = await self.k8s_service.create_cluster_role_binding(**resource["spec"])
-                elif resource_type == "serviceaccount":
-                    result = await self.k8s_service.create_serviceaccount(**resource["spec"])
-                elif resource_type == "namespace":
-                    result = await self.k8s_service.create_namespace(**resource["spec"])
-                else:
-                    raise ValueError(f"不支持的资源类型: {resource_type}")
+                operation_func = self._get_resource_operation(resource_type, "create", namespace)
+                result = await operation_func(resource)
                 
                 results["success"].append({
                     "name": resource_name,
@@ -99,45 +197,8 @@ class KubernetesAdvancedService:
                 resource_type = resource.get("kind", "").lower()
                 resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
-                # 根据资源类型调用相应的更新方法
-                if resource_type == "deployment":
-                    result = await self.k8s_service.update_deployment(**resource["spec"])
-                elif resource_type == "statefulset":
-                    result = await self.k8s_service.update_statefulset(**resource["spec"])
-                elif resource_type == "daemonset":
-                    result = await self.k8s_service.update_daemonset(**resource["spec"])
-                elif resource_type == "service":
-                    result = await self.k8s_service.update_service(**resource["spec"])
-                elif resource_type == "configmap":
-                    result = await self.k8s_service.update_configmap(**resource["spec"])
-                elif resource_type == "secret":
-                    result = await self.k8s_service.update_secret(**resource["spec"])
-                elif resource_type == "job":
-                    result = await self.k8s_service.update_job(**resource["spec"])
-                elif resource_type == "cronjob":
-                    result = await self.k8s_service.update_cronjob(**resource["spec"])
-                elif resource_type == "ingress":
-                    result = await self.k8s_service.update_ingress(**resource["spec"])
-                elif resource_type == "storageclass":
-                    result = await self.k8s_service.update_storageclass(**resource["spec"])
-                elif resource_type == "persistentvolume":
-                    result = await self.k8s_service.update_persistentvolume(**resource["spec"])
-                elif resource_type == "persistentvolumeclaim":
-                    result = await self.k8s_service.update_persistentvolumeclaim(**resource["spec"])
-                elif resource_type == "role":
-                    result = await self.k8s_service.update_role(**resource["spec"])
-                elif resource_type == "clusterrole":
-                    result = await self.k8s_service.update_cluster_role(**resource["spec"])
-                elif resource_type == "rolebinding":
-                    result = await self.k8s_service.update_role_binding(**resource["spec"])
-                elif resource_type == "clusterrolebinding":
-                    result = await self.k8s_service.update_cluster_role_binding(**resource["spec"])
-                elif resource_type == "serviceaccount":
-                    result = await self.k8s_service.update_serviceaccount(**resource["spec"])
-                elif resource_type == "namespace":
-                    result = await self.k8s_service.update_namespace(**resource["spec"])
-                else:
-                    raise ValueError(f"不支持的资源类型: {resource_type}")
+                operation_func = self._get_resource_operation(resource_type, "update", namespace)
+                result = await operation_func(resource_name, resource)
                 
                 results["success"].append({
                     "name": resource_name,
@@ -164,112 +225,8 @@ class KubernetesAdvancedService:
                 resource_type = resource.get("kind", "").lower()
                 resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
-                # 根据资源类型调用相应的删除方法
-                if resource_type == "deployment":
-                    result = await self.k8s_service.delete_deployment(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "statefulset":
-                    result = await self.k8s_service.delete_statefulset(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "daemonset":
-                    result = await self.k8s_service.delete_daemonset(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "service":
-                    result = await self.k8s_service.delete_service(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "configmap":
-                    result = await self.k8s_service.delete_configmap(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "secret":
-                    result = await self.k8s_service.delete_secret(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "job":
-                    result = await self.k8s_service.delete_job(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "cronjob":
-                    result = await self.k8s_service.delete_cronjob(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "ingress":
-                    result = await self.k8s_service.delete_ingress(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "storageclass":
-                    result = await self.k8s_service.delete_storageclass(
-                        name=resource_name,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "persistentvolume":
-                    result = await self.k8s_service.delete_persistentvolume(
-                        name=resource_name,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "persistentvolumeclaim":
-                    result = await self.k8s_service.delete_persistentvolumeclaim(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "role":
-                    result = await self.k8s_service.delete_role(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "clusterrole":
-                    result = await self.k8s_service.delete_cluster_role(
-                        name=resource_name,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "rolebinding":
-                    result = await self.k8s_service.delete_role_binding(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "clusterrolebinding":
-                    result = await self.k8s_service.delete_cluster_role_binding(
-                        name=resource_name,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "serviceaccount":
-                    result = await self.k8s_service.delete_serviceaccount(
-                        name=resource_name, 
-                        namespace=namespace,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                elif resource_type == "namespace":
-                    result = await self.k8s_service.delete_namespace(
-                        name=resource_name,
-                        grace_period_seconds=grace_period_seconds
-                    )
-                else:
-                    raise ValueError(f"不支持的资源类型: {resource_type}")
+                operation_func = self._get_resource_operation(resource_type, "delete", namespace)
+                result = await operation_func(resource_name, grace_period_seconds)
                 
                 results["success"].append({
                     "name": resource_name,

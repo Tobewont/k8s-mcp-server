@@ -7,7 +7,7 @@
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
-- **全面的 K8s 操作**：支持 125+ 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **全面的 K8s 操作**：支持 130+ 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
 - **双重传输协议**：同时支持 SSE 和 stdio 两种传输方式
@@ -171,6 +171,7 @@ k8s-mcp-server/
 - `list_jobs()` - 列出 Job
 - `describe_job()` - 获取 Job 详细信息
 - `create_job()` - 创建 Job
+- `update_job()` - 更新 Job
 - `delete_job()` - 删除 Job
 
 #### CronJob 管理
@@ -207,6 +208,43 @@ k8s-mcp-server/
 - `create_persistentvolumeclaim()` - 创建 PersistentVolumeClaim
 - `update_persistentvolumeclaim()` - 更新 PersistentVolumeClaim
 - `delete_persistentvolumeclaim()` - 删除 PersistentVolumeClaim
+
+#### ServiceAccount 管理
+- `list_serviceaccounts()` - 列出 ServiceAccount
+- `describe_serviceaccount()` - 获取 ServiceAccount 详细信息
+- `create_serviceaccount()` - 创建 ServiceAccount
+- `update_serviceaccount()` - 更新 ServiceAccount
+- `delete_serviceaccount()` - 删除 ServiceAccount
+
+#### RBAC 管理
+
+##### Role 管理
+- `list_roles()` - 列出 Role
+- `describe_role()` - 获取 Role 详细信息
+- `create_role()` - 创建 Role
+- `update_role()` - 更新 Role
+- `delete_role()` - 删除 Role
+
+##### ClusterRole 管理
+- `list_cluster_roles()` - 列出 ClusterRole
+- `describe_cluster_role()` - 获取 ClusterRole 详细信息
+- `create_cluster_role()` - 创建 ClusterRole
+- `update_cluster_role()` - 更新 ClusterRole
+- `delete_cluster_role()` - 删除 ClusterRole
+
+##### RoleBinding 管理
+- `list_role_bindings()` - 列出 RoleBinding
+- `describe_role_binding()` - 获取 RoleBinding 详细信息
+- `create_role_binding()` - 创建 RoleBinding
+- `update_role_binding()` - 更新 RoleBinding
+- `delete_role_binding()` - 删除 RoleBinding
+
+##### ClusterRoleBinding 管理
+- `list_cluster_role_bindings()` - 列出 ClusterRoleBinding
+- `describe_cluster_role_binding()` - 获取 ClusterRoleBinding 详细信息
+- `create_cluster_role_binding()` - 创建 ClusterRoleBinding
+- `update_cluster_role_binding()` - 创建 ClusterRoleBinding
+- `delete_cluster_role_binding()` - 删除 ClusterRoleBinding
 
 #### 集群基础管理
 - `list_nodes()` - 列出节点
@@ -246,9 +284,46 @@ k8s-mcp-server/
 
 ### 批量操作工具 (batch_tools.py)
 
+- `batch_list_resources()` - 批量查看资源
 - `batch_create_resources()` - 批量创建资源
 - `batch_update_resources()` - 批量更新资源
 - `batch_delete_resources()` - 批量删除资源
+
+#### 支持的批量操作资源类型
+
+**工作负载资源**：
+- Deployment - 部署管理
+- StatefulSet - 有状态应用
+- DaemonSet - 守护进程集
+- Job - 批处理任务（支持labels和annotations更新）
+- CronJob - 定时任务
+
+**网络与服务**：
+- Service - 服务暴露
+- Ingress - 入口控制器
+
+**配置与存储**：
+- ConfigMap - 配置管理
+- Secret - 敏感信息管理
+- StorageClass - 存储类
+- PersistentVolume - 持久化卷
+- PersistentVolumeClaim - 持久化卷声明
+
+**权限与身份管理**：
+- Namespace - 命名空间
+- ServiceAccount - 服务账户
+- Role - 角色（命名空间级别）
+- ClusterRole - 集群角色
+- RoleBinding - 角色绑定（命名空间级别）
+- ClusterRoleBinding - 集群角色绑定
+
+#### 批量操作特性
+
+- **原子性操作**：支持事务性批量操作，失败时自动回滚
+- **统一接口**：所有资源类型使用相同的批量操作接口
+- **灵活参数**：支持完整资源定义和简化参数两种方式
+- **错误处理**：详细的错误信息和成功/失败统计
+- **向后兼容**：不影响现有的单资源操作功能
 
 ### 备份和恢复工具 (backup_tools.py)
 
@@ -462,15 +537,58 @@ k8s-mcp-server/
 {
   "method": "tools/call",
   "params": {
-    "name": "validate_deployment_scaling",
+    "name": "validate_deployment_update",
     "arguments": {
       "name": "my-app",
       "namespace": "default",
-      "new_replicas": 5
+      "replicas": 5
     }
   }
 }
-      "replicas": 3,
+
+// 批量创建资源
+{
+  "method": "tools/call",
+  "params": {
+    "name": "batch_create_resources",
+    "arguments": {
+      "resources": [
+        {
+          "apiVersion": "apps/v1",
+          "kind": "Deployment",
+          "metadata": {"name": "app1", "namespace": "default"},
+          "spec": {"replicas": 2, "selector": {"matchLabels": {"app": "app1"}}, "template": {"metadata": {"labels": {"app": "app1"}}, "spec": {"containers": [{"name": "app1", "image": "nginx:1.20"}]}}}
+        },
+        {
+          "apiVersion": "v1",
+          "kind": "Service",
+          "metadata": {"name": "app1-svc", "namespace": "default"},
+          "spec": {"selector": {"app": "app1"}, "ports": [{"port": 80, "targetPort": 80}]}
+        }
+      ],
+      "namespace": "default"
+    }
+  }
+}
+
+// 批量更新Job的labels和annotations
+{
+  "method": "tools/call",
+  "params": {
+    "name": "batch_update_resources",
+    "arguments": {
+      "resources": [
+        {
+          "apiVersion": "batch/v1",
+          "kind": "Job",
+          "metadata": {
+            "name": "job1",
+            "namespace": "default",
+            "labels": {"app": "batch-job", "version": "v2", "updated": "true"},
+            "annotations": {"description": "Updated batch job", "last-modified": "2025-01-08"}
+          }
+        }
+      ],
       "namespace": "default"
     }
   }
@@ -802,13 +920,15 @@ kubectl logs -f deployment/k8s-mcp-server
 
 ### 最新版本特性
 
-- ✅ **84 个工具函数**：涵盖所有主要 Kubernetes 资源
+- ✅ **130+ 个工具函数**：涵盖所有主要 Kubernetes 资源
 - ✅ **优雅删除支持**：部分删除函数支持 `grace_period_seconds` 参数
 - ✅ **容器化支持**：提供 Docker 和 Kubernetes 部署
 - ✅ **数据持久化**：支持配置和日志的持久化存储
 - ✅ **健康检查**：提供完整的健康检查机制
 - ✅ **多集群管理**：支持多集群配置和快速切换
-- ❌ **已移除功能**：删除了冗余的 `force_delete_pod` 函数
+- ✅ **批量操作**：支持18种资源类型的批量操作，包含事务回滚
+- ✅ **RBAC管理**：完整的角色和权限管理系统
+- ✅ **备份恢复**：支持命名空间和资源级别的备份恢复
 
 
 ## ⚠️ 注意事项
