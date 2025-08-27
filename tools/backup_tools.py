@@ -16,14 +16,12 @@ from . import mcp
 
 
 @mcp.tool()
-async def backup_namespace(namespace: str, cluster_name: str = None, 
-                          include_secrets: bool = False) -> str:
+async def backup_namespace(namespace: str, cluster_name: str = None, include_secrets: bool = True) -> str:
     """备份命名空间
     
     Args:
         namespace: 命名空间名称
         cluster_name: 集群名称（可选）
-        include_secrets: 是否包含Secret资源
     """
     try:
         service = KubernetesAdvancedService()

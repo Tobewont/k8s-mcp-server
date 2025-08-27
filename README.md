@@ -1,5 +1,7 @@
 # Kubernetes MCP Server
 
+![python](https://img.shields.io/badge/python-3.11%2B-blue) ![k8s-version](https://img.shields.io/badge/k8s-v1.25%2B-orange) ![license](https://img.shields.io/badge/license-MIT-green)
+
 基于 FastMCP 框架的 Kubernetes 集群管理服务器，提供完整的 Kubernetes API 操作功能。
 
 ## 🔥 主要特性
@@ -10,8 +12,8 @@
 - **全面的 K8s 操作**：支持 130+ 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
-- **双重传输协议**：同时支持 SSE 和 stdio 两种传输方式
-- **容器化部署**：支持 Docker 和 Kubernetes 部署，包含完整的 K8s 清单文件
+- **双重传输协议**：同时支持 SSE 和 Stdio 两种传输方式
+- **容器化部署**：支持 Docker 和 Kubernetes 部署，包含完整的 k8s 清单文件
 
 ## ⚡ 快速开始
 
@@ -43,7 +45,7 @@ python main.py --transport sse --host 0.0.0.0 --port 8000
 uvicorn tools:app --host 0.0.0.0 --port 8000
 ```
 
-**stdio 模式**：通过标准输入输出与 MCP 客户端通信（默认）
+**Stdio 模式**：通过标准输入输出与 MCP 客户端通信（默认）
 
 **SSE 模式**：通过 Server-Sent Events 接口（`http://localhost:8000/mcp/k8s-server/sse`）提供 HTTP 服务
 
