@@ -13,6 +13,86 @@ from services.k8s_api_service import KubernetesAPIService
 from config import DATA_DIR, BACKUP_DIR_NAME
 
 
+class ResourceManager:
+    """资源管理器，统一管理资源配置和操作"""
+    
+    def __init__(self, k8s_service):
+        self.k8s_service = k8s_service
+        self._resource_configs = self._init_resource_configs()
+    
+    def _init_resource_configs(self):
+        """初始化资源配置"""
+        return {
+            "deployments": ResourceConfig("Deployment", "list_deployments", "get_deployment"),
+            "statefulsets": ResourceConfig("StatefulSet", "list_statefulsets", "get_statefulset"),
+            "daemonsets": ResourceConfig("DaemonSet", "list_daemonsets", "get_daemonset"),
+            "services": ResourceConfig("Service", "list_services", "get_service"),
+            "configmaps": ResourceConfig("ConfigMap", "list_configmaps", "get_configmap", 
+                                       skip_condition=lambda name: name in ["kube-root-ca.crt"]),
+            "secrets": ResourceConfig("Secret", "list_secrets", "get_secret",
+                                    skip_condition=lambda name: name.startswith("default-token-")),
+            "jobs": ResourceConfig("Job", "list_jobs", "get_job"),
+            "cronjobs": ResourceConfig("CronJob", "list_cronjobs", "get_cronjob"),
+            "ingresses": ResourceConfig("Ingress", "list_ingresses", "get_ingress"),
+            "persistentvolumeclaims": ResourceConfig("PersistentVolumeClaim", "list_persistentvolumeclaims", "get_persistentvolumeclaim"),
+            "serviceaccounts": ResourceConfig("ServiceAccount", "list_serviceaccounts", "get_serviceaccount",
+                                            skip_condition=lambda name: name == "default"),
+            "roles": ResourceConfig("Role", "list_roles", "get_role"),
+            "rolebindings": ResourceConfig("RoleBinding", "list_role_bindings", "get_role_binding")
+        }
+    
+    def get_resource_config(self, resource_type: str):
+        """获取资源配置"""
+        return self._resource_configs.get(resource_type)
+    
+    def get_operation_method(self, resource_type: str, operation: str, namespace: str = "default"):
+        """获取操作方法"""
+        config = self.get_resource_config(resource_type)
+        if not config:
+            raise ValueError(f"不支持的资源类型: {resource_type}")
+        
+        if operation == "list":
+            return lambda: getattr(self.k8s_service, config.list_method)(namespace=namespace)
+        elif operation == "get":
+            return lambda name: getattr(self.k8s_service, config.get_method)(name, namespace)
+        else:
+            raise ValueError(f"不支持的操作类型: {operation}")
+
+
+class ResourceConfig:
+    """资源配置类"""
+    
+    def __init__(self, kind: str, list_method: str, get_method: str, skip_condition: Callable = None):
+        self.kind = kind
+        self.list_method = list_method
+        self.get_method = get_method
+        self.skip_condition = skip_condition
+
+
+class BatchOperationResult:
+    """批量操作结果类"""
+    
+    def __init__(self):
+        self.success = []
+        self.failed = []
+        self.total = 0
+    
+    def add_success(self, resource_info):
+        self.success.append(resource_info)
+        self.total += 1
+    
+    def add_failure(self, resource_info, error):
+        self.failed.append({"resource": resource_info, "error": str(error)})
+        self.total += 1
+    
+    def to_dict(self):
+        return {
+            "success": self.success,
+            "failed": self.failed,
+            "total": self.total
+        }
+
+
 class KubernetesAdvancedService:
     """Kubernetes 进阶服务类
     整合批量操作、备份恢复、资源验证等功能
@@ -24,6 +104,652 @@ class KubernetesAdvancedService:
         self.backup_dir = os.path.join(DATA_DIR, BACKUP_DIR_NAME)
         os.makedirs(self.backup_dir, exist_ok=True)
         self.operation_history = []
+        
+        # 初始化资源管理器
+        self.resource_manager = ResourceManager(self.k8s_service)
+
+        # 统一的 kind -> apiVersion 映射
+        self._api_version_map: Dict[str, str] = {
+            "Deployment": "apps/v1",
+            "StatefulSet": "apps/v1",
+            "DaemonSet": "apps/v1",
+            "Service": "v1",
+            "ConfigMap": "v1",
+            "Secret": "v1",
+            "Job": "batch/v1",
+            "CronJob": "batch/v1",
+            "Ingress": "networking.k8s.io/v1",
+            "PersistentVolumeClaim": "v1",
+            "ServiceAccount": "v1",
+            "Role": "rbac.authorization.k8s.io/v1",
+            "RoleBinding": "rbac.authorization.k8s.io/v1",
+        }
+
+    # ==================== 规格归一化（备份/恢复通用） ====================
+    def _normalize_service_ports(self, ports: List[Dict], *, for_backup: bool) -> List[Dict]:
+        normalized_ports: List[Dict] = []
+        for port in ports or []:
+            if not isinstance(port, dict):
+                continue
+            port = dict(port)
+            # 统一字段命名
+            if "target_port" in port:
+                port["targetPort"] = port.pop("target_port")
+            if "node_port" in port:
+                port["nodePort"] = port.pop("node_port")
+
+            # 类型纠正（targetPort 数字优先；字符串保留为命名端口）
+            if "targetPort" in port and isinstance(port["targetPort"], str):
+                try:
+                    port["targetPort"] = int(port["targetPort"])
+                except ValueError:
+                    pass
+
+            # 运行时字段移除
+            for k in ["nodePort"]:
+                port.pop(k, None)
+
+            # 移除 None
+            for k in [key for key, val in list(port.items()) if val is None]:
+                port.pop(k, None)
+
+            normalized_ports.append(port)
+        return normalized_ports
+
+    def _normalize_spec(self, kind: str, spec: Dict, *, for_backup: bool) -> Dict:
+        if not isinstance(spec, dict):
+            return spec
+
+        normalized = json.loads(json.dumps(spec))
+
+        # 通用运行时字段移除
+        runtime_fields_common = ["finalizers"] if for_backup else []
+        for f in runtime_fields_common:
+            normalized.pop(f, None)
+
+        if kind == "Service":
+            # Service 运行时字段
+            runtime_fields_service = ["clusterIP", "clusterIPs", "cluster_ip", "external_ips", "load_balancer_ip", "session_affinity"]
+            for f in runtime_fields_service:
+                normalized.pop(f, None)
+            if "ports" in normalized:
+                normalized["ports"] = self._normalize_service_ports(normalized.get("ports", []), for_backup=for_backup)
+
+        elif kind == "PersistentVolumeClaim":
+            # PVC 运行时字段
+            normalized.pop("volumeName", None)
+            if for_backup:
+                normalized.pop("phase", None)
+
+        elif kind in ["Deployment", "StatefulSet", "DaemonSet"]:
+            # 工作负载类型通用处理
+            # strategy 纠正
+            if "strategy" in normalized and isinstance(normalized["strategy"], str):
+                strategy_type = normalized["strategy"]
+                normalized["strategy"] = {
+                    "type": strategy_type,
+                    "rollingUpdate": {"maxUnavailable": "25%", "maxSurge": "25%"}
+                }
+            
+            # selector 纠正
+            if "selector" in normalized:
+                selector = normalized["selector"]
+                if not isinstance(selector, dict) or "matchLabels" not in selector:
+                    if isinstance(selector, dict):
+                        normalized["selector"] = {"matchLabels": selector}
+            
+            # template 结构与标签对齐
+            if "template" in normalized and isinstance(normalized["template"], dict):
+                template = normalized["template"]
+                if "metadata" not in template:
+                    template["metadata"] = {}
+                if "spec" not in template:
+                    template["spec"] = {}
+                if "containers" in template and "containers" not in template["spec"]:
+                    template["spec"]["containers"] = template.pop("containers")
+                if "selector" in normalized and isinstance(normalized["selector"], dict) and "matchLabels" in normalized["selector"]:
+                    template["metadata"]["labels"] = normalized["selector"]["matchLabels"]
+            
+            # StatefulSet 特有字段
+            if kind == "StatefulSet":
+                if for_backup:
+                    # 移除运行时状态
+                    normalized.pop("currentReplicas", None)
+                    normalized.pop("readyReplicas", None)
+                    normalized.pop("currentRevision", None)
+                    normalized.pop("updateRevision", None)
+
+        elif kind == "Job":
+            if for_backup:
+                # Job 运行时字段
+                for f in ["activeDeadlineSeconds", "completions", "parallelism"]:
+                    if f in normalized and normalized[f] is None:
+                        normalized.pop(f, None)
+
+        elif kind == "CronJob":
+            if for_backup:
+                # CronJob 运行时字段
+                normalized.pop("lastScheduleTime", None)
+
+        elif kind == "Ingress":
+            if for_backup:
+                # Ingress 运行时字段
+                normalized.pop("loadBalancer", None)
+
+        elif kind in ["Role", "ClusterRole"]:
+            # RBAC 角色类型
+            if "rules" in normalized:
+                # 确保 rules 是列表格式
+                rules = normalized["rules"]
+                if isinstance(rules, list):
+                    for rule in rules:
+                        if isinstance(rule, dict):
+                            # 标准化字段名
+                            if "api_groups" in rule:
+                                rule["apiGroups"] = rule.pop("api_groups")
+                            if "resource_names" in rule:
+                                rule["resourceNames"] = rule.pop("resource_names")
+
+        elif kind in ["RoleBinding", "ClusterRoleBinding"]:
+            # RBAC 绑定类型
+            if "roleRef" in normalized:
+                role_ref = normalized["roleRef"]
+                if isinstance(role_ref, dict):
+                    # 标准化字段名
+                    if "api_group" in role_ref:
+                        role_ref["apiGroup"] = role_ref.pop("api_group")
+            
+            if "subjects" in normalized:
+                subjects = normalized["subjects"]
+                if isinstance(subjects, list):
+                    for subject in subjects:
+                        if isinstance(subject, dict):
+                            # 标准化字段名
+                            if "api_group" in subject:
+                                subject["apiGroup"] = subject.pop("api_group")
+                            # 清理空的apiGroup字段
+                            if subject.get("apiGroup") is None or subject.get("apiGroup") == "":
+                                subject.pop("apiGroup", None)
+
+        elif kind == "ServiceAccount":
+            if for_backup:
+                # ServiceAccount 运行时字段
+                normalized.pop("secrets", None)  # 自动生成的 secrets
+
+        return normalized
+
+    def _set_api_version_for_kind(self, resource: Dict) -> None:
+        kind = resource.get("kind")
+        if not kind:
+            return
+        api = self._api_version_map.get(kind)
+        if api:
+            resource["apiVersion"] = api
+    
+    def _create_base_k8s_resource(self, data: Dict, kind: str, from_backup: bool = False) -> Dict:
+        """创建基础的 Kubernetes 资源结构
+        
+        Args:
+            data: 原始数据（扁平化或备份格式）
+            kind: 资源类型
+            from_backup: 是否来自备份数据
+        """
+        # 处理 metadata
+        if from_backup:
+            metadata = data.get("metadata", {})
+        else:
+            # 从扁平化数据构建 metadata
+            flat_metadata = data.get("metadata", {})
+            metadata = {
+                "name": data.get("name") or flat_metadata.get("name", ""),
+                "namespace": data.get("namespace") or flat_metadata.get("namespace", ""),
+                "labels": data.get("labels") or flat_metadata.get("labels") or {},
+                "annotations": data.get("annotations") or flat_metadata.get("annotations") or {}
+            }
+        
+        # 创建基础资源结构
+        k8s_resource = {
+            "apiVersion": self._api_version_map.get(kind, "v1"),
+            "kind": kind,
+            "metadata": metadata
+        }
+        
+        return k8s_resource
+
+    def _populate_resource_content(self, k8s_resource: Dict, data: Dict, kind: str, from_backup: bool = False) -> Dict:
+        """填充资源的具体内容（spec、data、rules等）
+        
+        Args:
+            k8s_resource: 基础 K8s 资源结构
+            data: 原始数据
+            kind: 资源类型
+            from_backup: 是否来自备份数据
+        """
+        if kind == "ConfigMap":
+            k8s_resource["data"] = data.get("data", {})
+            if data.get("binary_data") or data.get("binaryData"):
+                k8s_resource["binaryData"] = data.get("binary_data") or data.get("binaryData", {})
+                
+        elif kind == "Secret":
+            # 处理Secret的数据字段
+            if from_backup:
+                k8s_resource["data"] = data.get("data", {})
+            else:
+                # 从API响应中获取数据，API返回的是decoded_data
+                decoded_data = data.get("decoded_data", {})
+                # 将明文数据转换为base64编码（Kubernetes要求）
+                import base64
+                encoded_data = {}
+                for key, value in decoded_data.items():
+                    if isinstance(value, str):
+                        encoded_data[key] = base64.b64encode(value.encode('utf-8')).decode('utf-8')
+                    else:
+                        encoded_data[key] = value
+                k8s_resource["data"] = encoded_data
+            k8s_resource["type"] = data.get("type", "Opaque")
+            
+        elif kind == "Role":
+            rules = data.get("rules", [])
+            # 标准化 RBAC 字段名（如果不是来自备份）
+            if not from_backup:
+                cleaned_rules = []
+                for rule in rules:
+                    if isinstance(rule, dict):
+                        cleaned_rule = {}
+                        # 处理必需字段
+                        if rule.get("api_groups"):
+                            cleaned_rule["apiGroups"] = rule.get("api_groups")
+                        elif "api_groups" in rule:
+                            cleaned_rule["apiGroups"] = rule.pop("api_groups")
+                        
+                        if rule.get("resources"):
+                            cleaned_rule["resources"] = rule.get("resources")
+                        
+                        if rule.get("verbs"):
+                            cleaned_rule["verbs"] = rule.get("verbs")
+                        
+                        # 处理可选字段（只有当有值时才添加）
+                        if rule.get("resource_names"):
+                            cleaned_rule["resourceNames"] = rule.get("resource_names")
+                        elif "resource_names" in rule and rule["resource_names"]:
+                            cleaned_rule["resourceNames"] = rule.pop("resource_names")
+                        
+                        if rule.get("non_resource_urls"):
+                            cleaned_rule["nonResourceURLs"] = rule.get("non_resource_urls")
+                        
+                        cleaned_rules.append(cleaned_rule)
+                rules = cleaned_rules
+            k8s_resource["rules"] = rules
+            
+        elif kind == "RoleBinding":
+            subjects = data.get("subjects", [])
+            role_ref = data.get("role_ref") or data.get("roleRef", {})
+            
+            # 标准化字段名（如果不是来自备份）
+            if not from_backup:
+                for subject in subjects:
+                    if isinstance(subject, dict):
+                        if "api_group" in subject:
+                            subject["apiGroup"] = subject.pop("api_group")
+                
+                if isinstance(role_ref, dict):
+                    if "api_group" in role_ref:
+                        role_ref["apiGroup"] = role_ref.pop("api_group")
+            
+            k8s_resource["subjects"] = subjects
+            k8s_resource["roleRef"] = role_ref
+            
+        elif kind in ["Deployment", "StatefulSet", "DaemonSet", "Service", "Job", "CronJob", "Ingress", "PersistentVolumeClaim", "ServiceAccount"]:
+            # 处理有 spec 字段的资源
+            if from_backup:
+                spec = data.get("spec", {})
+                spec = self._normalize_spec(kind, spec, for_backup=False)
+            else:
+                # 从扁平化数据构建 spec
+                spec = self._build_spec_from_flat_data(data, kind)
+            k8s_resource["spec"] = spec
+        
+        return k8s_resource
+    
+    def _build_spec_from_flat_data(self, flat_data: Dict, kind: str) -> Dict:
+        """从扁平化数据构建 spec 字段"""
+        if kind == "Deployment":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            spec = {
+                "replicas": api_spec.get("replicas", 1),
+                "selector": {
+                    "matchLabels": api_spec.get("selector", {})
+                },
+                "template": {
+                    "metadata": api_spec.get("template", {}).get("metadata", {"labels": api_spec.get("selector", {})}),
+                    "spec": {
+                        "containers": self._convert_containers(api_spec.get("template", {}).get("spec", {}).get("containers", [])),
+                        "volumes": api_spec.get("template", {}).get("spec", {}).get("volumes", [])
+                    }
+                }
+            }
+            # 添加策略
+            if api_spec.get("strategy"):
+                spec["strategy"] = {"type": api_spec.get("strategy")}
+            return spec
+            
+        elif kind == "StatefulSet":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            spec = {
+                "replicas": api_spec.get("replicas", 1),
+                "selector": {
+                    "matchLabels": api_spec.get("selector", {})
+                },
+                "serviceName": api_spec.get("serviceName", ""),
+                "template": {
+                    "metadata": api_spec.get("template", {}).get("metadata", {"labels": api_spec.get("selector", {})}),
+                    "spec": {
+                        "containers": self._convert_containers(api_spec.get("template", {}).get("spec", {}).get("containers", [])),
+                        "volumes": api_spec.get("template", {}).get("spec", {}).get("volumes", [])
+                    }
+                }
+            }
+            if api_spec.get("volumeClaimTemplates"):
+                spec["volumeClaimTemplates"] = self._convert_volume_claim_templates(
+                    api_spec.get("volumeClaimTemplates", [])
+                )
+            return spec
+            
+        elif kind == "DaemonSet":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            return {
+                "selector": {
+                    "matchLabels": api_spec.get("selector", {})
+                },
+                "template": {
+                    "metadata": api_spec.get("template", {}).get("metadata", {"labels": api_spec.get("selector", {})}),
+                    "spec": {
+                        "containers": self._convert_containers(api_spec.get("template", {}).get("spec", {}).get("containers", [])),
+                        "volumes": api_spec.get("template", {}).get("spec", {}).get("volumes", [])
+                    }
+                }
+            }
+
+        elif kind == "Service":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            spec = {
+                "type": api_spec.get("type", "ClusterIP"),
+                "ports": api_spec.get("ports", []),
+                "selector": api_spec.get("selector", {})
+            }
+            if api_spec.get("cluster_ip") or api_spec.get("clusterIP"):
+                spec["clusterIP"] = api_spec.get("cluster_ip") or api_spec.get("clusterIP")
+            return spec
+
+        elif kind == "Job":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            spec = {
+                "template": {
+                    "metadata": api_spec.get("template", {}).get("metadata", {}),
+                    "spec": {
+                        "containers": self._convert_containers(api_spec.get("template", {}).get("spec", {}).get("containers", [])),
+                        "restartPolicy": api_spec.get("template", {}).get("spec", {}).get("restartPolicy", api_spec.get("template", {}).get("restart_policy", "Never"))
+                    }
+                }
+            }
+            for field in ["completions", "parallelism", "backoffLimit"]:
+                if api_spec.get(field):
+                    spec[field] = api_spec.get(field)
+            return spec
+            
+        elif kind == "CronJob":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            spec = {
+                "schedule": api_spec.get("schedule", ""),
+                "jobTemplate": {
+                    "spec": {
+                        "template": {
+                            "metadata": api_spec.get("jobTemplate", {}).get("spec", {}).get("template", {}).get("metadata", {}),
+                            "spec": {
+                                "containers": self._convert_containers(api_spec.get("jobTemplate", {}).get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])),
+                                "restartPolicy": api_spec.get("jobTemplate", {}).get("spec", {}).get("template", {}).get("spec", {}).get("restartPolicy", api_spec.get("jobTemplate", {}).get("spec", {}).get("template", {}).get("restart_policy", "Never"))
+                            }
+                        }
+                    }
+                }
+            }
+            if api_spec.get("suspend") is not None:
+                spec["suspend"] = api_spec.get("suspend")
+            return spec
+            
+        elif kind == "Ingress":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            spec = {}
+            if api_spec.get("rules"):
+                spec["rules"] = api_spec.get("rules", [])
+            if api_spec.get("tls"):
+                spec["tls"] = api_spec.get("tls", [])
+            if api_spec.get("ingressClassName"):
+                spec["ingressClassName"] = api_spec.get("ingressClassName")
+            return spec
+            
+        elif kind == "PersistentVolumeClaim":
+            # 从API返回的结构中提取spec数据
+            api_spec = flat_data.get("spec", {})
+            
+            spec = {
+                "accessModes": api_spec.get("accessModes", ["ReadWriteOnce"]),
+                "resources": api_spec.get("resources", {
+                    "requests": {
+                        "storage": api_spec.get("resources", {}).get("requests", {}).get("storage", "1Gi")
+                    }
+                })
+            }
+            if api_spec.get("storageClassName"):
+                spec["storageClassName"] = api_spec.get("storageClassName")
+            if api_spec.get("volumeMode"):
+                spec["volumeMode"] = api_spec.get("volumeMode")
+            return spec
+
+        elif kind == "ServiceAccount":
+            # ServiceAccount通常不需要从spec构建，大部分信息在metadata中
+            spec = {}
+            if flat_data.get("automount_service_account_token") is not None:
+                spec["automountServiceAccountToken"] = flat_data.get("automount_service_account_token")
+            if flat_data.get("image_pull_secrets"):
+                spec["imagePullSecrets"] = [
+                    {"name": secret} for secret in flat_data.get("image_pull_secrets", [])
+                ]
+            return spec
+        
+        return {}
+
+    def _convert_flat_to_k8s_format(self, flat_data: Dict, kind: str) -> Dict:
+        """将 k8s_api_service 返回的扁平化数据转换为标准的 Kubernetes 资源格式"""
+        if not flat_data or not kind:
+            return {}
+        
+        # 使用统一的转换系统
+        k8s_resource = self._create_base_k8s_resource(flat_data, kind, from_backup=False)
+        k8s_resource = self._populate_resource_content(k8s_resource, flat_data, kind, from_backup=False)
+        
+        return k8s_resource
+    
+    def _convert_containers(self, containers_data: list) -> list:
+        """转换容器数据格式"""
+        containers = []
+        for c in containers_data:
+            container = {
+                "name": c.get("name", ""),
+                "image": c.get("image", "")
+            }
+            if c.get("imagePullPolicy"):
+                container["imagePullPolicy"] = c.get("imagePullPolicy")
+            if c.get("command"):
+                container["command"] = c.get("command")
+            if c.get("args"):
+                container["args"] = c.get("args")
+            if c.get("ports"):
+                container["ports"] = []
+                for port in c.get("ports", []):
+                    port_config = {"containerPort": port.get("containerPort", port.get("port", 80))}
+                    if port.get("name"):
+                        port_config["name"] = port.get("name")
+                    if port.get("protocol"):
+                        port_config["protocol"] = port.get("protocol")
+                    container["ports"].append(port_config)
+            if c.get("env"):
+                # 清理env中的None值
+                env_vars = []
+                for env in c.get("env", []):
+                    if env.get("name"):
+                        env_var = {"name": env.get("name")}
+                        if env.get("value") is not None:
+                            env_var["value"] = env.get("value")
+                        elif env.get("valueFrom"):
+                            value_from = env.get("valueFrom")
+                            if value_from.get("secretKeyRef"):
+                                env_var["valueFrom"] = {"secretKeyRef": value_from.get("secretKeyRef")}
+                            elif value_from.get("configMapKeyRef"):
+                                env_var["valueFrom"] = {"configMapKeyRef": value_from.get("configMapKeyRef")}
+                        # 如果既没有value也没有valueFrom，仍然添加环境变量（可能是占位符）
+                        env_vars.append(env_var)
+                container["env"] = env_vars
+            if c.get("resources"):
+                # 清理resources中的None值
+                resources = {}
+                if c.get("resources", {}).get("requests"):
+                    requests = {k: v for k, v in c.get("resources", {}).get("requests", {}).items() if v is not None}
+                    if requests:
+                        resources["requests"] = requests
+                if c.get("resources", {}).get("limits"):
+                    limits = {k: v for k, v in c.get("resources", {}).get("limits", {}).items() if v is not None}
+                    if limits:
+                        resources["limits"] = limits
+                if resources:
+                    container["resources"] = resources
+            if c.get("livenessProbe"):
+                probe = c.get("livenessProbe")
+                if probe.get("httpGet") or probe.get("initialDelaySeconds") or probe.get("periodSeconds"):
+                    liveness_probe = {}
+                    if probe.get("httpGet"):
+                        liveness_probe["httpGet"] = probe.get("httpGet")
+                    if probe.get("initialDelaySeconds"):
+                        liveness_probe["initialDelaySeconds"] = probe.get("initialDelaySeconds")
+                    if probe.get("periodSeconds"):
+                        liveness_probe["periodSeconds"] = probe.get("periodSeconds")
+                    if probe.get("successThreshold"):
+                        liveness_probe["successThreshold"] = probe.get("successThreshold")
+                    if probe.get("failureThreshold"):
+                        liveness_probe["failureThreshold"] = probe.get("failureThreshold")
+                    container["livenessProbe"] = liveness_probe
+            if c.get("readinessProbe"):
+                probe = c.get("readinessProbe")
+                if probe.get("httpGet") or probe.get("initialDelaySeconds") or probe.get("periodSeconds"):
+                    readiness_probe = {}
+                    if probe.get("httpGet"):
+                        readiness_probe["httpGet"] = probe.get("httpGet")
+                    if probe.get("initialDelaySeconds"):
+                        readiness_probe["initialDelaySeconds"] = probe.get("initialDelaySeconds")
+                    if probe.get("periodSeconds"):
+                        readiness_probe["periodSeconds"] = probe.get("periodSeconds")
+                    if probe.get("successThreshold"):
+                        readiness_probe["successThreshold"] = probe.get("successThreshold")
+                    if probe.get("failureThreshold"):
+                        readiness_probe["failureThreshold"] = probe.get("failureThreshold")
+                    container["readinessProbe"] = readiness_probe
+            if c.get("volumeMounts"):
+                container["volumeMounts"] = []
+                for vm in c.get("volumeMounts", []):
+                    volume_mount = {
+                        "name": vm.get("name", ""),
+                        "mountPath": vm.get("mountPath", "")
+                    }
+                    if vm.get("readOnly") is not None:
+                        volume_mount["readOnly"] = vm.get("readOnly")
+                    if vm.get("subPath"):
+                        volume_mount["subPath"] = vm.get("subPath")
+                    container["volumeMounts"].append(volume_mount)
+            containers.append(container)
+        return containers
+    
+    def _convert_volume_claim_templates(self, vct_data: list) -> list:
+        """转换卷声明模板数据格式"""
+        templates = []
+        for vct in vct_data:
+            template = {
+                "metadata": vct.get("metadata", {"name": vct.get("name", "")}),
+                "spec": {
+                    "accessModes": vct.get("spec", {}).get("accessModes", vct.get("access_modes", ["ReadWriteOnce"])),
+                    "resources": vct.get("spec", {}).get("resources", {
+                        "requests": {
+                            "storage": vct.get("storage", "1Gi")
+                        }
+                    })
+                }
+            }
+            storage_class = vct.get("spec", {}).get("storageClassName") or vct.get("storage_class")
+            if storage_class:
+                template["spec"]["storageClassName"] = storage_class
+            templates.append(template)
+        return templates
+    
+    async def _backup_resource_type(self, resource_type: str, namespace: str) -> List[Dict]:
+        """统一的资源类型备份方法"""
+        try:
+            # 使用ResourceManager获取配置
+            config = self.resource_manager.get_resource_config(resource_type)
+            if not config:
+                return []
+            
+            resources = []
+            
+            # 获取列表和详情操作方法
+            list_method = self.resource_manager.get_operation_method(resource_type, "list", namespace)
+            get_method = self.resource_manager.get_operation_method(resource_type, "get", namespace)
+            
+            # 列出资源
+            listed = await list_method()
+            
+            for r in listed:
+                resource_name = r.get("name")
+                if not resource_name:
+                    continue
+                
+                # 检查跳过条件
+                if config.skip_condition and config.skip_condition(resource_name):
+                    continue
+                
+                try:
+                    # 获取资源详情
+                    resource_data = await get_method(resource_name)
+                    if not resource_data or resource_data == {}:
+                        continue
+                    
+                    # 使用转换函数处理资源数据
+                    k8s_resource = self._convert_flat_to_k8s_format(resource_data, config.kind)
+                    processed_resource = self._sanitize_for_backup(k8s_resource)
+                    
+                    resources.append(processed_resource)
+                    
+                except Exception as e:
+                    print(f"获取 {config.kind} {resource_name} 失败: {e}")
+                    continue
+        
+        except Exception as e:
+            print(f"备份 {resource_type} 失败: {e}")
+            return []
+        
+        return resources
     
     # ==================== 批量操作相关方法 ====================
     
@@ -161,87 +887,69 @@ class KubernetesAdvancedService:
         
         return results
 
-    async def batch_create_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
-        """批量创建k8s资源"""
-        results = {"success": [], "failed": [], "total": len(resources)}
+    async def _batch_operation_generic(self, items: List, operation_type: str, namespace: str = "default", **kwargs) -> Dict:
+        """通用的批量操作方法"""
+        result = BatchOperationResult()
         
-        for resource in resources:
+        for item in items:
             try:
-                resource_type = resource.get("kind", "").lower()
-                resource_name = resource.get("metadata", {}).get("name", "unknown")
-                
-                operation_func = self._get_resource_operation(resource_type, "create", namespace)
-                result = await operation_func(resource)
-                
-                results["success"].append({
-                    "name": resource_name,
-                    "kind": resource_type,
-                    "result": result
-                })
+                if operation_type in ["create", "update", "delete"]:
+                    # 资源操作
+                    resource_type = item.get("kind", "").lower()
+                    resource_name = item.get("metadata", {}).get("name", "unknown")
+                    
+                    operation_func = self._get_resource_operation(resource_type, operation_type, namespace)
+                    
+                    if operation_type == "create":
+                        op_result = await operation_func(item)
+                    elif operation_type == "update":
+                        op_result = await operation_func(resource_name, item)
+                    elif operation_type == "delete":
+                        grace_period = kwargs.get("grace_period_seconds")
+                        op_result = await operation_func(resource_name, grace_period)
+                    
+                    result.add_success({
+                        "name": resource_name,
+                        "kind": resource_type,
+                        "result": op_result
+                    })
+                    
+                elif operation_type == "list":
+                    # 列表操作
+                    resource_type = item.lower()
+                    operation_func = self._get_resource_operation(resource_type, "list", namespace)
+                    op_result = await operation_func()
+                    
+                    result.add_success({
+                        "resource_type": resource_type,
+                        "count": len(op_result) if isinstance(op_result, list) else 0,
+                        "items": op_result
+                    })
                 
             except Exception as e:
-                results["failed"].append({
-                    "name": resource.get("metadata", {}).get("name", "unknown"),
-                    "kind": resource.get("kind", "unknown"),
-                    "error": str(e)
-                })
+                if operation_type == "list":
+                    result.add_failure({"resource_type": item}, e)
+                else:
+                    result.add_failure({
+                        "name": item.get("metadata", {}).get("name", "unknown"),
+                        "kind": item.get("kind", "unknown")
+                    }, e)
         
-        return results
+        return result.to_dict()
+
+    async def batch_create_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
+        """批量创建k8s资源"""
+        return await self._batch_operation_generic(resources, "create", namespace)
     
     async def batch_update_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
         """批量更新资源"""
-        results = {"success": [], "failed": [], "total": len(resources)}
-        
-        for resource in resources:
-            try:
-                resource_type = resource.get("kind", "").lower()
-                resource_name = resource.get("metadata", {}).get("name", "unknown")
-                
-                operation_func = self._get_resource_operation(resource_type, "update", namespace)
-                result = await operation_func(resource_name, resource)
-                
-                results["success"].append({
-                    "name": resource_name,
-                    "kind": resource_type,
-                    "result": result
-                })
-                
-            except Exception as e:
-                results["failed"].append({
-                    "name": resource.get("metadata", {}).get("name", "unknown"),
-                    "kind": resource.get("kind", "unknown"),
-                    "error": str(e)
-                })
-        
-        return results
+        return await self._batch_operation_generic(resources, "update", namespace)
     
     async def batch_delete_resources(self, resources: List[Dict], namespace: str = "default", 
                                    grace_period_seconds: Optional[int] = None) -> Dict:
         """批量删除资源"""
-        results = {"success": [], "failed": [], "total": len(resources)}
-        
-        for resource in resources:
-            try:
-                resource_type = resource.get("kind", "").lower()
-                resource_name = resource.get("metadata", {}).get("name", "unknown")
-                
-                operation_func = self._get_resource_operation(resource_type, "delete", namespace)
-                result = await operation_func(resource_name, grace_period_seconds)
-                
-                results["success"].append({
-                    "name": resource_name,
-                    "kind": resource_type,
-                    "result": result
-                })
-                
-            except Exception as e:
-                results["failed"].append({
-                    "name": resource.get("metadata", {}).get("name", "unknown"),
-                    "kind": resource.get("kind", "unknown"),
-                    "error": str(e)
-                })
-        
-        return results    
+        return await self._batch_operation_generic(resources, "delete", namespace, grace_period_seconds=grace_period_seconds)
+
     # ==================== 备份恢复相关方法 ====================
     
     def _get_backup_path(self, cluster_name: str, namespace: str = None, 
@@ -265,8 +973,7 @@ class KubernetesAdvancedService:
         
         return backup_path
     
-    async def backup_namespace(self, namespace: str, cluster_name: str = None, 
-                             include_secrets: bool = False) -> str:
+    async def backup_namespace(self, namespace: str, cluster_name: str = None, include_secrets: bool = True) -> str:
         """备份整个命名空间的资源"""
         if not cluster_name:
             # 获取当前集群名称
@@ -277,77 +984,78 @@ class KubernetesAdvancedService:
             "metadata": {
                 "cluster_name": cluster_name,
                 "namespace": namespace,
-                "timestamp": datetime.now().isoformat(),
-                "version": "v1",
-                "include_secrets": include_secrets
+                "version": "v1"
             },
+            "namespace": None,  # 将在后面设置
             "resources": {}
         }
         
-        # 备份各种资源
-        resource_types = [
-            "pods", "deployments", "statefulsets", "daemonsets",
-            "services", "configmaps", "secrets", "jobs", "cronjobs", "ingresses", 
-            "storageclasses", "persistentvolumes", "persistentvolumeclaims", 
-            "serviceaccounts", "roles", "clusterroles", "rolebindings", "clusterrolebindings"
-        ]
+        # 备份namespace本身
+        try:
+            namespaces = await self.k8s_service.list_namespaces()
+            namespace_obj = None
+            for ns in namespaces:
+                if ns.get("name") == namespace:
+                    namespace_obj = ns
+                    break
+            
+            if namespace_obj:
+                # 构建完整的namespace资源定义
+                namespace_resource = {
+                    "apiVersion": "v1",
+                    "kind": "Namespace",
+                    "metadata": {
+                        "name": namespace_obj.get("name"),
+                        "labels": namespace_obj.get("labels", {}),
+                        "annotations": namespace_obj.get("annotations", {})
+                    }
+                }
+                backup_data["namespace"] = self._sanitize_for_backup(namespace_resource)
+            else:
+                print(f"警告: 无法找到命名空间 {namespace}")
+        except Exception as e:
+            print(f"备份命名空间 {namespace} 失败: {e}")
         
+        # 备份命名空间级资源（排除 Pods/ClusterRole/ClusterRoleBinding/StorageClass/PV 等）
+        resource_types = [
+            "deployments", "statefulsets", "daemonsets",
+            "services", "configmaps", "jobs", "cronjobs", "ingresses", 
+            "persistentvolumeclaims", "serviceaccounts", "roles", "rolebindings"
+        ]
         if include_secrets:
             resource_types.append("secrets")
-        
+
+        # 使用统一的备份方法处理所有资源类型
         for resource_type in resource_types:
             try:
-                if resource_type == "pods":
-                    resources = await self.k8s_service.list_pods(namespace=namespace)
-                elif resource_type == "deployments":
-                    resources = await self.k8s_service.list_deployments(namespace=namespace)
-                elif resource_type == "statefulsets":
-                    resources = await self.k8s_service.list_statefulsets(namespace=namespace)
-                elif resource_type == "daemonsets":
-                    resources = await self.k8s_service.list_daemonsets(namespace=namespace)
-                elif resource_type == "services":
-                    resources = await self.k8s_service.list_services(namespace=namespace)
-                elif resource_type == "configmaps":
-                    resources = await self.k8s_service.list_configmaps(namespace=namespace)
-                elif resource_type == "secrets":
-                    resources = await self.k8s_service.list_secrets(namespace=namespace)
-                elif resource_type == "jobs":
-                    resources = await self.k8s_service.list_jobs(namespace=namespace)
-                elif resource_type == "cronjobs":
-                    resources = await self.k8s_service.list_cronjobs(namespace=namespace)
-                elif resource_type == "ingresses":
-                    resources = await self.k8s_service.list_ingresses(namespace=namespace)
-                elif resource_type == "storageclasses":
-                    resources = await self.k8s_service.list_storageclasses()
-                elif resource_type == "persistentvolumes":
-                    resources = await self.k8s_service.list_persistentvolumes()
-                elif resource_type == "persistentvolumeclaims":
-                    resources = await self.k8s_service.list_persistentvolumeclaims(namespace=namespace)
-                elif resource_type == "serviceaccounts":
-                    resources = await self.k8s_service.list_serviceaccounts(namespace=namespace)
-                elif resource_type == "roles":
-                    resources = await self.k8s_service.list_roles(namespace=namespace)
-                elif resource_type == "clusterroles":
-                    resources = await self.k8s_service.list_cluster_roles()
-                elif resource_type == "rolebindings":
-                    resources = await self.k8s_service.list_role_bindings(namespace=namespace)
-                elif resource_type == "clusterrolebindings":
-                    resources = await self.k8s_service.list_cluster_role_bindings()
-                
+                resources = await self._backup_resource_type(resource_type, namespace)
                 backup_data["resources"][resource_type] = resources
-                
             except Exception as e:
                 print(f"备份 {resource_type} 失败: {e}")
                 backup_data["resources"][resource_type] = {"error": str(e)}
-        
-        # 保存备份文件
+
+        # 保存备份文件（YAML）
         backup_path = self._get_backup_path(cluster_name, namespace)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = os.path.join(backup_path, f"namespace_backup_{timestamp}.json")
+        backup_file = os.path.join(backup_path, f"namespace_backup_{timestamp}.yaml")
+
+        # 自定义YAML Dumper，处理多行字符串和禁用别名
+        class CustomYamlDumper(yaml.SafeDumper):
+            def ignore_aliases(self, data):
+                return True
+            
+            def represent_str(self, data):
+                # 如果字符串包含换行符，使用literal style (|)
+                if '\n' in data:
+                    return self.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+                return self.represent_scalar('tag:yaml.org,2002:str', data)
         
+        # 注册字符串表示方法
+        CustomYamlDumper.add_representer(str, CustomYamlDumper.represent_str)
+
         with open(backup_file, 'w', encoding='utf-8') as f:
-            json.dump(backup_data, f, ensure_ascii=False, indent=2)
-        
+            yaml.dump(backup_data, f, sort_keys=False, allow_unicode=True, Dumper=CustomYamlDumper, default_flow_style=False)
+
         return backup_file
     
     async def backup_specific_resource(self, resource_type: str, resource_name: str, 
@@ -361,16 +1069,30 @@ class KubernetesAdvancedService:
             # 获取特定资源
             if resource_type == "deployment":
                 resource_data = await self.k8s_service.get_deployment(resource_name, namespace)
+            elif resource_type == "statefulset":
+                resource_data = await self.k8s_service.get_statefulset(resource_name, namespace)
+            elif resource_type == "daemonset":
+                resource_data = await self.k8s_service.get_daemonset(resource_name, namespace)
             elif resource_type == "service":
                 resource_data = await self.k8s_service.get_service(resource_name, namespace)
             elif resource_type == "configmap":
                 resource_data = await self.k8s_service.get_configmap(resource_name, namespace)
             elif resource_type == "secret":
                 resource_data = await self.k8s_service.get_secret(resource_name, namespace)
-            elif resource_type == "persistentvolumeclaim":
-                resource_data = await self.k8s_service.get_persistentvolumeclaim(resource_name, namespace)
+            elif resource_type == "job":
+                resource_data = await self.k8s_service.get_job(resource_name, namespace)
+            elif resource_type == "cronjob":
+                resource_data = await self.k8s_service.get_cronjob(resource_name, namespace)
             elif resource_type == "ingress":
                 resource_data = await self.k8s_service.get_ingress(resource_name, namespace)
+            elif resource_type == "persistentvolumeclaim":
+                resource_data = await self.k8s_service.get_persistentvolumeclaim(resource_name, namespace)
+            elif resource_type == "serviceaccount":
+                resource_data = await self.k8s_service.get_serviceaccount(resource_name, namespace)
+            elif resource_type == "role":
+                resource_data = await self.k8s_service.get_role(resource_name, namespace)
+            elif resource_type == "rolebinding":
+                resource_data = await self.k8s_service.get_role_binding(resource_name, namespace)
             else:
                 raise ValueError(f"不支持的资源类型: {resource_type}")
             
@@ -380,7 +1102,6 @@ class KubernetesAdvancedService:
                     "namespace": namespace,
                     "resource_type": resource_type,
                     "resource_name": resource_name,
-                    "timestamp": datetime.now().isoformat(),
                     "version": "v1"
                 },
                 "resource": resource_data
@@ -406,16 +1127,46 @@ class KubernetesAdvancedService:
             raise FileNotFoundError(f"备份文件不存在: {backup_file}")
         
         with open(backup_file, 'r', encoding='utf-8') as f:
-            backup_data = json.load(f)
+            backup_data = yaml.safe_load(f)
         
         metadata = backup_data["metadata"]
         original_namespace = metadata["namespace"]
         original_cluster = metadata["cluster_name"]
         
-        target_namespace = target_namespace or original_namespace
+        # 不允许恢复到不同的命名空间，必须恢复到原命名空间
+        if target_namespace and target_namespace != original_namespace:
+            raise ValueError(f"不允许恢复到不同的命名空间。原命名空间: {original_namespace}, 目标命名空间: {target_namespace}")
+        
+        target_namespace = original_namespace  # 强制使用原命名空间
         target_cluster = target_cluster or original_cluster
         
         results = {"success": [], "failed": [], "total": 0}
+        
+        # 恢复namespace本身（如果备份中包含）
+        if "namespace" in backup_data:
+            try:
+                namespace_resource = backup_data["namespace"]
+                await self.k8s_service.create_namespace(resource=namespace_resource)
+                results["success"].append(f"namespace/{original_namespace}")
+                results["total"] += 1
+                print(f"成功恢复命名空间: {original_namespace}")
+            except Exception as e:
+                # 命名空间可能已存在，这是正常的
+                if "already exists" in str(e).lower() or "conflict" in str(e).lower():
+                    print(f"命名空间 {original_namespace} 已存在，跳过创建")
+                else:
+                    results["failed"].append({
+                        "resource": f"namespace/{original_namespace}",
+                        "error": str(e)
+                    })
+                    print(f"恢复命名空间失败: {e}")
+        else:
+            # 如果备份中没有namespace定义，尝试创建（向后兼容）
+            try:
+                await self.k8s_service.create_namespace(name=target_namespace)
+            except Exception:
+                # 命名空间已存在则忽略
+                pass
         
         # 如果是命名空间备份
         if "resources" in backup_data:
@@ -427,29 +1178,54 @@ class KubernetesAdvancedService:
                     })
                     continue
                 
+                # 过滤掉无效的资源
+                valid_resources = []
                 for resource in resources:
+                    if not resource or resource == {}:
+                        continue
+                    # 跳过系统自动创建的资源
+                    resource_name = resource.get("metadata", {}).get("name", "")
+                    if not resource_name or resource_name in ["kube-root-ca.crt"] or resource_name.startswith("default-token-"):
+                        continue
+                    valid_resources.append(resource)
+                
+                for resource in valid_resources:
                     try:
-                        # 修改命名空间
+                        # 确保命名空间正确（应该已经是原命名空间）
                         if "metadata" in resource:
+                            # 验证命名空间是否匹配，不允许修改
+                            current_ns = resource["metadata"].get("namespace")
+                            if current_ns and current_ns != target_namespace:
+                                print(f"警告: 资源 {resource.get('metadata', {}).get('name')} 的命名空间 {current_ns} 与目标命名空间 {target_namespace} 不匹配")
                             resource["metadata"]["namespace"] = target_namespace
                         
-                        # 根据资源类型调用相应的创建方法
+                        # 根据资源类型调用相应的创建方法，使用完整资源定义
                         if resource_type == "deployments":
-                            await self.k8s_service.create_deployment(**resource)
+                            await self.k8s_service.create_deployment(resource=self._convert_to_k8s_resource(resource, "Deployment"), namespace=target_namespace)
+                        elif resource_type == "statefulsets":
+                            await self.k8s_service.create_statefulset(resource=self._convert_to_k8s_resource(resource, "StatefulSet"), namespace=target_namespace)
+                        elif resource_type == "daemonsets":
+                            await self.k8s_service.create_daemonset(resource=self._convert_to_k8s_resource(resource, "DaemonSet"), namespace=target_namespace)
                         elif resource_type == "services":
-                            await self.k8s_service.create_service(**resource)
+                            await self.k8s_service.create_service(resource=self._convert_to_k8s_resource(resource, "Service"), namespace=target_namespace)
                         elif resource_type == "configmaps":
-                            await self.k8s_service.create_configmap(**resource)
+                            await self.k8s_service.create_configmap(resource=self._convert_to_k8s_resource(resource, "ConfigMap"), namespace=target_namespace)
                         elif resource_type == "secrets":
-                            await self.k8s_service.create_secret(**resource)
-                        elif resource_type == "persistentvolumeclaims":
-                            await self.k8s_service.create_persistentvolumeclaim(**resource)
-                        elif resource_type == "ingresses":
-                            await self.k8s_service.create_ingress(**resource)
+                            await self.k8s_service.create_secret(resource=self._convert_to_k8s_resource(resource, "Secret"), namespace=target_namespace)
                         elif resource_type == "jobs":
-                            await self.k8s_service.create_job(**resource)
+                            await self.k8s_service.create_job(resource=self._convert_to_k8s_resource(resource, "Job"), namespace=target_namespace)
                         elif resource_type == "cronjobs":
-                            await self.k8s_service.create_cronjob(**resource)
+                            await self.k8s_service.create_cronjob(resource=self._convert_to_k8s_resource(resource, "CronJob"), namespace=target_namespace)
+                        elif resource_type == "ingresses":
+                            await self.k8s_service.create_ingress(resource=self._convert_to_k8s_resource(resource, "Ingress"), namespace=target_namespace)
+                        elif resource_type == "persistentvolumeclaims":
+                            await self.k8s_service.create_persistentvolumeclaim(resource=self._convert_to_k8s_resource(resource, "PersistentVolumeClaim"), namespace=target_namespace)    
+                        elif resource_type == "serviceaccounts":
+                            await self.k8s_service.create_serviceaccount(resource=self._convert_to_k8s_resource(resource, "ServiceAccount"), namespace=target_namespace)
+                        elif resource_type == "roles":
+                            await self.k8s_service.create_role(resource=self._convert_to_k8s_resource(resource, "Role"), namespace=target_namespace)
+                        elif resource_type == "rolebindings":
+                            await self.k8s_service.create_role_binding(resource=self._convert_to_k8s_resource(resource, "RoleBinding"), namespace=target_namespace)
                         
                         results["success"].append(f"{resource_type}/{resource['metadata']['name']}")
                         results["total"] += 1
@@ -470,19 +1246,33 @@ class KubernetesAdvancedService:
                 if "metadata" in resource:
                     resource["metadata"]["namespace"] = target_namespace
                 
-                # 根据资源类型调用相应的创建方法
+                # 根据资源类型调用相应的创建方法，使用完整资源定义
                 if resource_type == "deployment":
-                    await self.k8s_service.create_deployment(**resource)
+                    await self.k8s_service.create_deployment(resource=self._convert_to_k8s_resource(resource, "Deployment"), namespace=target_namespace)
+                elif resource_type == "statefulset":
+                    await self.k8s_service.create_statefulset(resource=self._convert_to_k8s_resource(resource, "StatefulSet"), namespace=target_namespace)
+                elif resource_type == "daemonset":
+                    await self.k8s_service.create_daemonset(resource=self._convert_to_k8s_resource(resource, "DaemonSet"), namespace=target_namespace)
                 elif resource_type == "service":
-                    await self.k8s_service.create_service(**resource)
+                    await self.k8s_service.create_service(resource=self._convert_to_k8s_resource(resource, "Service"), namespace=target_namespace)
                 elif resource_type == "configmap":
-                    await self.k8s_service.create_configmap(**resource)
+                    await self.k8s_service.create_configmap(resource=self._convert_to_k8s_resource(resource, "ConfigMap"), namespace=target_namespace)
                 elif resource_type == "secret":
-                    await self.k8s_service.create_secret(**resource)
-                elif resource_type == "persistentvolumeclaim":
-                    await self.k8s_service.create_persistentvolumeclaim(**resource)
+                    await self.k8s_service.create_secret(resource=self._convert_to_k8s_resource(resource, "Secret"), namespace=target_namespace)
+                elif resource_type == "job":
+                    await self.k8s_service.create_job(resource=self._convert_to_k8s_resource(resource, "Job"), namespace=target_namespace)
+                elif resource_type == "cronjob":
+                    await self.k8s_service.create_cronjob(resource=self._convert_to_k8s_resource(resource, "CronJob"), namespace=target_namespace)
                 elif resource_type == "ingress":
-                    await self.k8s_service.create_ingress(**resource)
+                    await self.k8s_service.create_ingress(resource=self._convert_to_k8s_resource(resource, "Ingress"), namespace=target_namespace)
+                elif resource_type == "persistentvolumeclaim":
+                    await self.k8s_service.create_persistentvolumeclaim(resource=self._convert_to_k8s_resource(resource, "PersistentVolumeClaim"), namespace=target_namespace)
+                elif resource_type == "serviceaccount":
+                    await self.k8s_service.create_serviceaccount(resource=self._convert_to_k8s_resource(resource, "ServiceAccount"), namespace=target_namespace)
+                elif resource_type == "role":
+                    await self.k8s_service.create_role(resource=self._convert_to_k8s_resource(resource, "Role"), namespace=target_namespace)
+                elif resource_type == "rolebinding":
+                    await self.k8s_service.create_role_binding(resource=self._convert_to_k8s_resource(resource, "RoleBinding"), namespace=target_namespace)
                 
                 results["success"].append(f"{resource_type}/{resource['metadata']['name']}")
                 results["total"] += 1
@@ -494,6 +1284,96 @@ class KubernetesAdvancedService:
                 })
         
         return results
+    
+    def _convert_to_k8s_resource(self, resource_data: Dict, kind: str) -> Dict:
+        """将备份的资源数据转换为标准的 Kubernetes 资源定义"""
+        # 使用统一的转换系统
+        k8s_resource = self._create_base_k8s_resource(resource_data, kind, from_backup=True)
+        k8s_resource = self._populate_resource_content(k8s_resource, resource_data, kind, from_backup=True)
+
+        # 清理不需要的字段
+        if "metadata" in k8s_resource:
+            metadata = k8s_resource["metadata"]
+            # 移除 Kubernetes 自动生成的字段
+            for field in ["uid", "resourceVersion", "generation", "creationTimestamp", "created", "managedFields"]:
+                metadata.pop(field, None)
+        
+        return k8s_resource
+    
+    def _sanitize_for_backup(self, resource_obj: Dict) -> Dict:
+        """按照 K8s YAML 标准严格过滤字段，仅保留声明式配置"""
+        if not isinstance(resource_obj, dict):
+            return resource_obj
+        
+        resource = json.loads(json.dumps(resource_obj))  # 深拷贝
+        
+        # 1. 顶级字段白名单：仅保留声明式配置相关字段
+        allowed_top_fields = {"apiVersion", "kind", "metadata", "spec", "data", "binaryData", "type", "rules", "roleRef", "subjects"}
+        keys_to_remove = [k for k in list(resource.keys()) if k not in allowed_top_fields]
+        for k in keys_to_remove:
+            resource.pop(k, None)
+        
+        # 2. metadata 字段白名单：仅保留用户定义的元数据
+        metadata = resource.get("metadata", {})
+        if metadata:
+            allowed_meta_fields = {"name", "namespace", "labels", "annotations"}
+            meta_keys_to_remove = [k for k in list(metadata.keys()) if k not in allowed_meta_fields]
+            for k in meta_keys_to_remove:
+                metadata.pop(k, None)
+            resource["metadata"] = metadata
+        
+        # 3. 移除所有 status 相关字段（运行时状态）
+        resource.pop("status", None)
+        
+        # 清理volumes中的自定义type字段
+        if resource.get("spec", {}).get("template", {}).get("spec", {}).get("volumes"):
+            volumes = resource["spec"]["template"]["spec"]["volumes"]
+            for volume in volumes:
+                volume.pop("type", None)
+        
+        # 清理Job和CronJob的template metadata中的运行时字段
+        if resource.get("kind") in ["Job", "CronJob"]:
+            template_metadata = None
+            if resource.get("kind") == "Job":
+                template_metadata = resource.get("spec", {}).get("template", {}).get("metadata", {})
+            elif resource.get("kind") == "CronJob":
+                template_metadata = resource.get("spec", {}).get("jobTemplate", {}).get("spec", {}).get("template", {}).get("metadata", {})
+            
+            if template_metadata:
+                # 移除运行时生成的标签
+                runtime_labels = [
+                    "batch.kubernetes.io/controller-uid",
+                    "batch.kubernetes.io/job-name", 
+                    "controller-uid",
+                    "job-name"
+                ]
+                for label in runtime_labels:
+                    template_metadata.get("labels", {}).pop(label, None)
+        
+        # 4. 如果是 spec，进行统一规范化
+        spec = resource.get("spec")
+        if spec is not None and isinstance(spec, dict):
+            resource["spec"] = self._normalize_spec(resource.get("kind"), spec, for_backup=True)
+            # 如果spec为空，移除它（特别是ServiceAccount）
+            if not resource["spec"]:
+                resource.pop("spec", None)
+        
+        # 5. 确保必要字段存在且不为空
+        if not resource.get("metadata"):
+            print(f"警告: 资源缺少 metadata: {resource}")
+        
+        # 检查需要 spec 字段的资源类型
+        spec_required_kinds = ["Deployment", "StatefulSet", "DaemonSet", "Service", "Job", "CronJob", "Ingress", "PersistentVolumeClaim"]
+        if resource.get("kind") in spec_required_kinds and not resource.get("spec"):
+            print(f"警告: {resource.get('kind')} 缺少 spec: {resource}")
+        
+        # 检查 RBAC 资源的特殊字段
+        if resource.get("kind") == "Role" and not resource.get("rules"):
+            print(f"警告: Role 缺少 rules: {resource}")
+        if resource.get("kind") == "RoleBinding" and (not resource.get("subjects") or not resource.get("roleRef")):
+            print(f"警告: RoleBinding 缺少 subjects 或 roleRef: {resource}")
+        
+        return resource
     
     def list_backups(self, cluster_name: str = None, namespace: str = None) -> List[Dict]:
         """列出备份文件"""
@@ -509,7 +1389,7 @@ class KubernetesAdvancedService:
         
         for root, dirs, files in os.walk(search_path):
             for file in files:
-                if file.endswith('.json'):
+                if file.endswith('.json') or file.endswith('.yaml'):
                     file_path = os.path.join(root, file)
                     relative_path = os.path.relpath(file_path, self.backup_dir)
                     
@@ -523,7 +1403,7 @@ class KubernetesAdvancedService:
                         "namespace": None,
                         "resource_type": None,
                         "resource_name": None,
-                        "timestamp": file.split('_')[-1].replace('.json', '') if '_' in file else "unknown"
+                        "timestamp": file.split('_')[-1].replace('.json', '').replace('.yaml', '') if '_' in file else "unknown"
                     }
                     
                     # 解析路径结构
@@ -684,85 +1564,78 @@ class KubernetesAdvancedService:
         """获取操作后的资源状态"""
         return await self.get_resource_before_operation(resource_type, resource_name, namespace)
     
-    # ==================== Deployment 比较和验证方法 ====================
+    # ==================== 通用资源比较方法 ====================
     
-    def compare_deployment_changes(self, before: Dict, after: Dict) -> Dict:
-        """比较Deployment的变化"""
-        changes = {
-            "replicas": None,
-            "image": None,
-            "labels": None,
-            "annotations": None,
-            "resources": None,
-            "env_vars": None
-        }
+    def _compare_resource_fields(self, before: Dict, after: Dict, field_configs: Dict) -> Dict:
+        """通用的资源字段比较方法
+        
+        Args:
+            before: 操作前的资源状态
+            after: 操作后的资源状态
+            field_configs: 字段配置，格式为 {field_name: field_path_or_function}
+        """
+        changes = {}
         
         if before.get("error") or after.get("error"):
             return {"error": "无法获取资源状态"}
         
-        # 比较副本数
-        before_replicas = before.get("spec", {}).get("replicas", 0)
-        after_replicas = after.get("spec", {}).get("replicas", 0)
-        if before_replicas != after_replicas:
-            changes["replicas"] = {
-                "before": before_replicas,
-                "after": after_replicas,
-                "change": f"{before_replicas} -> {after_replicas}"
-            }
-        
-        # 比较镜像
-        before_containers = before.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-        after_containers = after.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-        
-        if before_containers and after_containers:
-            before_image = before_containers[0].get("image", "")
-            after_image = after_containers[0].get("image", "")
-            if before_image != after_image:
-                changes["image"] = {
-                    "before": before_image,
-                    "after": after_image,
-                    "change": f"{before_image} -> {after_image}"
+        for field_name, config in field_configs.items():
+            if callable(config):
+                # 如果是函数，调用函数获取值
+                before_value = config(before)
+                after_value = config(after)
+            elif isinstance(config, str):
+                # 如果是字符串路径，按路径获取值
+                before_value = self._get_nested_value(before, config)
+                after_value = self._get_nested_value(after, config)
+            else:
+                # 如果是元组，第一个元素是before路径，第二个是after路径
+                before_path, after_path = config
+                before_value = self._get_nested_value(before, before_path)
+                after_value = self._get_nested_value(after, after_path)
+            
+            if before_value != after_value:
+                changes[field_name] = {
+                    "before": before_value,
+                    "after": after_value
                 }
-        
-        # 比较标签
-        before_labels = before.get("metadata", {}).get("labels", {})
-        after_labels = after.get("metadata", {}).get("labels", {})
-        if before_labels != after_labels:
-            changes["labels"] = {
-                "before": before_labels,
-                "after": after_labels
-            }
-        
-        # 比较注解
-        before_annotations = before.get("metadata", {}).get("annotations", {})
-        after_annotations = after.get("metadata", {}).get("annotations", {})
-        if before_annotations != after_annotations:
-            changes["annotations"] = {
-                "before": before_annotations,
-                "after": after_annotations
-            }
-        
-        # 比较资源限制
-        if before_containers and after_containers:
-            before_resources = before_containers[0].get("resources", {})
-            after_resources = after_containers[0].get("resources", {})
-            if before_resources != after_resources:
-                changes["resources"] = {
-                    "before": before_resources,
-                    "after": after_resources
-                }
-        
-        # 比较环境变量
-        if before_containers and after_containers:
-            before_env = before_containers[0].get("env", [])
-            after_env = after_containers[0].get("env", [])
-            if before_env != after_env:
-                changes["env_vars"] = {
-                    "before": before_env,
-                    "after": after_env
-                }
+                # 如果值是简单类型，添加change描述
+                if isinstance(before_value, (str, int, bool)) and isinstance(after_value, (str, int, bool)):
+                    changes[field_name]["change"] = f"{before_value} -> {after_value}"
         
         return changes
+    
+    def _get_nested_value(self, data: Dict, path: str, default=None):
+        """从嵌套字典中获取值"""
+        keys = path.split(".")
+        current = data
+        
+        for key in keys:
+            if isinstance(current, dict) and key in current:
+                current = current[key]
+            else:
+                return default
+        
+        return current
+
+    # ==================== Deployment 比较和验证方法 ====================
+    
+    def compare_deployment_changes(self, before: Dict, after: Dict) -> Dict:
+        """比较Deployment的变化"""
+        def get_first_container_field(resource, field):
+            containers = resource.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+            return containers[0].get(field) if containers else None
+        
+        field_configs = {
+            "replicas": "spec.replicas",
+            "labels": "metadata.labels",
+            "annotations": "metadata.annotations",
+            "image": lambda r: get_first_container_field(r, "image"),
+            "resources": lambda r: get_first_container_field(r, "resources"),
+            "env_vars": lambda r: get_first_container_field(r, "env")
+        }
+        
+        return self._compare_resource_fields(before, after, field_configs)
 
     async def validate_deployment_operation(self, name: str, namespace: str = "default",
                                           operation: str = "update", **kwargs) -> Dict:

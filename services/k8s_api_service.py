@@ -24,6 +24,101 @@ class KubernetesAPIService:
         self.extensions_v1beta1_api = None
         self.batch_v1_api = None
         self.batch_v1beta1_api = None
+    
+    def _extract_volume_info(self, volume) -> Dict:
+        """统一的卷信息提取方法"""
+        vinfo = {"name": volume.name}
+        
+        if volume.config_map:
+            vinfo["type"] = "ConfigMap"
+            config_map_info = {"name": volume.config_map.name}
+            if volume.config_map.optional:
+                config_map_info["optional"] = volume.config_map.optional
+            vinfo["configMap"] = config_map_info
+        elif volume.secret:
+            vinfo["type"] = "Secret"
+            secret_info = {"secretName": volume.secret.secret_name}
+            if volume.secret.optional:
+                secret_info["optional"] = volume.secret.optional
+            vinfo["secret"] = secret_info
+        elif volume.persistent_volume_claim:
+            vinfo["type"] = "PersistentVolumeClaim"
+            vinfo["persistentVolumeClaim"] = {"claimName": volume.persistent_volume_claim.claim_name}
+        elif volume.host_path:
+            vinfo["type"] = "HostPath"
+            vinfo["hostPath"] = {"path": volume.host_path.path}
+            if volume.host_path.type:
+                vinfo["hostPath"]["type"] = volume.host_path.type
+        elif volume.empty_dir:
+            vinfo["type"] = "EmptyDir"
+            vinfo["emptyDir"] = {}
+            if volume.empty_dir.size_limit:
+                vinfo["emptyDir"]["sizeLimit"] = volume.empty_dir.size_limit
+        
+        return vinfo
+    
+    def _extract_container_info(self, container) -> Dict:
+        """统一的容器信息提取方法"""
+        return {
+            "name": container.name,
+            "image": container.image,
+            "imagePullPolicy": container.image_pull_policy,
+            "ports": [
+                {"containerPort": port.container_port, "name": port.name, "protocol": port.protocol}
+                for port in (container.ports or [])
+            ],
+            "env": [
+                {
+                    "name": env.name,
+                    "value": env.value,
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": env.value_from.secret_key_ref.name,
+                            "key": env.value_from.secret_key_ref.key
+                        } if env.value_from and env.value_from.secret_key_ref else None,
+                        "configMapKeyRef": {
+                            "name": env.value_from.config_map_key_ref.name,
+                            "key": env.value_from.config_map_key_ref.key
+                        } if env.value_from and env.value_from.config_map_key_ref else None
+                    } if env.value_from else None
+                }
+                for env in (container.env or [])
+            ],
+            "resources": {
+                "requests": {
+                    "memory": container.resources.requests.get("memory") if container.resources and container.resources.requests else None,
+                    "cpu": container.resources.requests.get("cpu") if container.resources and container.resources.requests else None
+                } if container.resources and container.resources.requests else {},
+                "limits": {
+                    "memory": container.resources.limits.get("memory") if container.resources and container.resources.limits else None,
+                    "cpu": container.resources.limits.get("cpu") if container.resources and container.resources.limits else None
+                } if container.resources and container.resources.limits else {}
+            } if container.resources else {},
+            "livenessProbe": {
+                "httpGet": {
+                    "path": container.liveness_probe.http_get.path,
+                    "port": container.liveness_probe.http_get.port
+                } if container.liveness_probe and container.liveness_probe.http_get else None,
+                "initialDelaySeconds": container.liveness_probe.initial_delay_seconds,
+                "periodSeconds": container.liveness_probe.period_seconds,
+                "successThreshold": container.liveness_probe.success_threshold,
+                "failureThreshold": container.liveness_probe.failure_threshold
+            } if container.liveness_probe else None,
+            "readinessProbe": {
+                "httpGet": {
+                    "path": container.readiness_probe.http_get.path,
+                    "port": container.readiness_probe.http_get.port
+                } if container.readiness_probe and container.readiness_probe.http_get else None,
+                "initialDelaySeconds": container.readiness_probe.initial_delay_seconds,
+                "periodSeconds": container.readiness_probe.period_seconds,
+                "successThreshold": container.readiness_probe.success_threshold,
+                "failureThreshold": container.readiness_probe.failure_threshold
+            } if container.readiness_probe else None,
+            "volumeMounts": [
+                {"mountPath": v.mount_path, "name": v.name, "readOnly": v.read_only} 
+                for v in (container.volume_mounts or [])
+            ]
+        }
         
     def load_config(self, kubeconfig_content: str = None, kubeconfig_path: str = None):
         """
@@ -278,6 +373,10 @@ class KubernetesAPIService:
                 name=name, namespace=namespace
             )
             
+            # 提取容器和卷信息
+            containers = [self._extract_container_info(c) for c in deployment.spec.template.spec.containers]
+            volumes = [self._extract_volume_info(v) for v in (deployment.spec.template.spec.volumes or [])]
+
             return {
                 "metadata": {
                     "name": deployment.metadata.name,
@@ -291,17 +390,13 @@ class KubernetesAPIService:
                     "selector": deployment.spec.selector.match_labels or {},
                     "strategy": deployment.spec.strategy.type if deployment.spec.strategy else None,
                     "template": {
-                        "containers": [
-                            {
-                                "name": container.name,
-                                "image": container.image,
-                                "ports": [
-                                    {"containerPort": port.container_port}
-                                    for port in (container.ports or [])
-                                ]
-                            }
-                            for container in deployment.spec.template.spec.containers
-                        ]
+                        "metadata": {
+                            "labels": deployment.spec.template.metadata.labels or {}
+                        },
+                        "spec": {
+                            "containers": containers,
+                            "volumes": volumes
+                        }
                     }
                 },
                 "status": {
@@ -570,19 +665,65 @@ class KubernetesAPIService:
                 containers.append({
                     "name": c.name,
                     "image": c.image,
-                    "resources": {
-                        "limits": c.resources.limits if c.resources and c.resources.limits else {},
-                        "requests": c.resources.requests if c.resources and c.resources.requests else {}
-                    },
-                    "env": [
-                        {"name": e.name, "value": e.value, "value_from": str(e.value_from) if e.value_from else None}
-                        for e in (c.env or [])
-                    ],
+                    "imagePullPolicy": c.image_pull_policy,
                     "ports": [
-                        {"containerPort": p.container_port, "name": p.name} for p in (c.ports or [])
+                        {
+                            "containerPort": port.container_port,
+                            "name": port.name,
+                            "protocol": port.protocol
+                        }
+                        for port in (c.ports or [])
                     ],
-                    "volume_mounts": [
-                        {"mountPath": v.mount_path, "name": v.name, "readOnly": v.read_only} for v in (c.volume_mounts or [])
+                    "env": [
+                        {
+                            "name": env.name,
+                            "value": env.value,
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": env.value_from.secret_key_ref.name,
+                                    "key": env.value_from.secret_key_ref.key
+                                } if env.value_from and env.value_from.secret_key_ref else None,
+                                "configMapKeyRef": {
+                                    "name": env.value_from.config_map_key_ref.name,
+                                    "key": env.value_from.config_map_key_ref.key
+                                } if env.value_from and env.value_from.config_map_key_ref else None
+                            } if env.value_from else None
+                        }
+                        for env in (c.env or [])
+                    ],
+                    "resources": {
+                        "requests": {
+                            "memory": c.resources.requests.get("memory") if c.resources and c.resources.requests else None,
+                            "cpu": c.resources.requests.get("cpu") if c.resources and c.resources.requests else None
+                        } if c.resources and c.resources.requests else {},
+                        "limits": {
+                            "memory": c.resources.limits.get("memory") if c.resources and c.resources.limits else None,
+                            "cpu": c.resources.limits.get("cpu") if c.resources and c.resources.limits else None
+                        } if c.resources and c.resources.limits else {}
+                    } if c.resources else {},
+                    "livenessProbe": {
+                        "httpGet": {
+                            "path": c.liveness_probe.http_get.path,
+                            "port": c.liveness_probe.http_get.port
+                        } if c.liveness_probe and c.liveness_probe.http_get else None,
+                        "initialDelaySeconds": c.liveness_probe.initial_delay_seconds,
+                        "periodSeconds": c.liveness_probe.period_seconds,
+                        "successThreshold": c.liveness_probe.success_threshold,
+                        "failureThreshold": c.liveness_probe.failure_threshold
+                    } if c.liveness_probe else None,
+                    "readinessProbe": {
+                        "httpGet": {
+                            "path": c.readiness_probe.http_get.path,
+                            "port": c.readiness_probe.http_get.port
+                        } if c.readiness_probe and c.readiness_probe.http_get else None,
+                        "initialDelaySeconds": c.readiness_probe.initial_delay_seconds,
+                        "periodSeconds": c.readiness_probe.period_seconds,
+                        "successThreshold": c.readiness_probe.success_threshold,
+                        "failureThreshold": c.readiness_probe.failure_threshold
+                    } if c.readiness_probe else None,
+                    "volumeMounts": [
+                        {"mountPath": v.mount_path, "name": v.name, "readOnly": v.read_only} 
+                        for v in (c.volume_mounts or [])
                     ]
                 })
 
@@ -592,35 +733,68 @@ class KubernetesAPIService:
                 vinfo = {"name": v.name}
                 if v.config_map:
                     vinfo["type"] = "ConfigMap"
-                    vinfo["configMap"] = {"name": v.config_map.name, "optional": v.config_map.optional}
-                if v.secret:
+                    config_map_info = {"name": v.config_map.name}
+                    if v.config_map.optional:
+                        config_map_info["optional"] = v.config_map.optional
+                    vinfo["configMap"] = config_map_info
+                elif v.secret:
                     vinfo["type"] = "Secret"
-                    vinfo["secret"] = {"secretName": v.secret.secret_name, "optional": v.secret.optional}
-                if v.persistent_volume_claim:
+                    secret_info = {"secretName": v.secret.secret_name}
+                    if v.secret.optional:
+                        secret_info["optional"] = v.secret.optional
+                    vinfo["secret"] = secret_info
+                elif v.persistent_volume_claim:
                     vinfo["type"] = "PersistentVolumeClaim"
-                    vinfo["claimName"] = v.persistent_volume_claim.claim_name
+                    vinfo["persistentVolumeClaim"] = {"claimName": v.persistent_volume_claim.claim_name}
+                elif v.host_path:
+                    vinfo["type"] = "HostPath"
+                    vinfo["hostPath"] = {"path": v.host_path.path}
+                    if v.host_path.type:
+                        vinfo["hostPath"]["type"] = v.host_path.type
+                elif v.empty_dir:
+                    vinfo["type"] = "EmptyDir"
+                    vinfo["emptyDir"] = {}
+                    if v.empty_dir.size_limit:
+                        vinfo["emptyDir"]["sizeLimit"] = v.empty_dir.size_limit
                 volumes.append(vinfo)
 
             return {
+                "metadata": {
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
-                "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "labels": response.metadata.labels or {},
+                    "annotations": response.metadata.annotations or {},
+                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                },
+                "spec": {
                 "replicas": response.spec.replicas,
-                "ready_replicas": response.status.ready_replicas or 0,
-                "current_replicas": response.status.current_replicas or 0,
-                "labels": response.metadata.labels,
-                "selector": response.spec.selector.match_labels,
+                    "selector": response.spec.selector.match_labels or {},
+                    "serviceName": response.spec.service_name,
+                    "template": {
+                        "metadata": {
+                            "labels": response.spec.template.metadata.labels or {}
+                        },
+                        "spec": {
                 "containers": containers,
-                "volumes": volumes,
-                "volume_claim_templates": [
-                    {
-                        "name": vct.metadata.name,
-                        "access_modes": vct.spec.access_modes,
-                        "storage": vct.spec.resources.requests.get("storage", ""),
-                        "storage_class": vct.spec.storage_class_name
+                            "volumes": volumes
+                        }
+                    },
+                    "volumeClaimTemplates": [
+                        {
+                            "metadata": {"name": vct.metadata.name},
+                            "spec": {
+                                "accessModes": vct.spec.access_modes,
+                                "resources": {"requests": {"storage": vct.spec.resources.requests.get("storage", "")}},
+                                "storageClassName": vct.spec.storage_class_name
+                            }
                     } for vct in (response.spec.volume_claim_templates or [])
                 ]
+                },
+                "status": {
+                    "replicas": response.status.replicas or 0,
+                    "ready_replicas": response.status.ready_replicas or 0,
+                    "current_replicas": response.status.current_replicas or 0
+                }
             }
             
         except ApiException as e:
@@ -881,19 +1055,65 @@ class KubernetesAPIService:
                 containers.append({
                     "name": c.name,
                     "image": c.image,
-                    "resources": {
-                        "limits": c.resources.limits if c.resources and c.resources.limits else {},
-                        "requests": c.resources.requests if c.resources and c.resources.requests else {}
-                    },
-                    "env": [
-                        {"name": e.name, "value": e.value, "value_from": str(e.value_from) if e.value_from else None}
-                        for e in (c.env or [])
-                    ],
+                    "imagePullPolicy": c.image_pull_policy,
                     "ports": [
-                        {"containerPort": p.container_port, "name": p.name} for p in (c.ports or [])
+                        {
+                            "containerPort": port.container_port,
+                            "name": port.name,
+                            "protocol": port.protocol
+                        }
+                        for port in (c.ports or [])
                     ],
-                    "volume_mounts": [
-                        {"mountPath": v.mount_path, "name": v.name, "readOnly": v.read_only} for v in (c.volume_mounts or [])
+                    "env": [
+                        {
+                            "name": env.name,
+                            "value": env.value,
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": env.value_from.secret_key_ref.name,
+                                    "key": env.value_from.secret_key_ref.key
+                                } if env.value_from and env.value_from.secret_key_ref else None,
+                                "configMapKeyRef": {
+                                    "name": env.value_from.config_map_key_ref.name,
+                                    "key": env.value_from.config_map_key_ref.key
+                                } if env.value_from and env.value_from.config_map_key_ref else None
+                            } if env.value_from else None
+                        }
+                        for env in (c.env or [])
+                    ],
+                    "resources": {
+                        "requests": {
+                            "memory": c.resources.requests.get("memory") if c.resources and c.resources.requests else None,
+                            "cpu": c.resources.requests.get("cpu") if c.resources and c.resources.requests else None
+                        } if c.resources and c.resources.requests else {},
+                        "limits": {
+                            "memory": c.resources.limits.get("memory") if c.resources and c.resources.limits else None,
+                            "cpu": c.resources.limits.get("cpu") if c.resources and c.resources.limits else None
+                        } if c.resources and c.resources.limits else {}
+                    } if c.resources else {},
+                    "livenessProbe": {
+                        "httpGet": {
+                            "path": c.liveness_probe.http_get.path,
+                            "port": c.liveness_probe.http_get.port
+                        } if c.liveness_probe and c.liveness_probe.http_get else None,
+                        "initialDelaySeconds": c.liveness_probe.initial_delay_seconds,
+                        "periodSeconds": c.liveness_probe.period_seconds,
+                        "successThreshold": c.liveness_probe.success_threshold,
+                        "failureThreshold": c.liveness_probe.failure_threshold
+                    } if c.liveness_probe else None,
+                    "readinessProbe": {
+                        "httpGet": {
+                            "path": c.readiness_probe.http_get.path,
+                            "port": c.readiness_probe.http_get.port
+                        } if c.readiness_probe and c.readiness_probe.http_get else None,
+                        "initialDelaySeconds": c.readiness_probe.initial_delay_seconds,
+                        "periodSeconds": c.readiness_probe.period_seconds,
+                        "successThreshold": c.readiness_probe.success_threshold,
+                        "failureThreshold": c.readiness_probe.failure_threshold
+                    } if c.readiness_probe else None,
+                    "volumeMounts": [
+                        {"mountPath": v.mount_path, "name": v.name, "readOnly": v.read_only} 
+                        for v in (c.volume_mounts or [])
                     ]
                 })
 
@@ -903,27 +1123,56 @@ class KubernetesAPIService:
                 vinfo = {"name": v.name}
                 if v.config_map:
                     vinfo["type"] = "ConfigMap"
-                    vinfo["configMap"] = {"name": v.config_map.name, "optional": v.config_map.optional}
-                if v.secret:
+                    config_map_info = {"name": v.config_map.name}
+                    if v.config_map.optional:
+                        config_map_info["optional"] = v.config_map.optional
+                    vinfo["configMap"] = config_map_info
+                elif v.secret:
                     vinfo["type"] = "Secret"
-                    vinfo["secret"] = {"secretName": v.secret.secret_name, "optional": v.secret.optional}
-                if v.persistent_volume_claim:
+                    secret_info = {"secretName": v.secret.secret_name}
+                    if v.secret.optional:
+                        secret_info["optional"] = v.secret.optional
+                    vinfo["secret"] = secret_info
+                elif v.persistent_volume_claim:
                     vinfo["type"] = "PersistentVolumeClaim"
-                    vinfo["claimName"] = v.persistent_volume_claim.claim_name
+                    vinfo["persistentVolumeClaim"] = {"claimName": v.persistent_volume_claim.claim_name}
+                elif v.host_path:
+                    vinfo["type"] = "HostPath"
+                    vinfo["hostPath"] = {"path": v.host_path.path}
+                    if v.host_path.type:
+                        vinfo["hostPath"]["type"] = v.host_path.type
+                elif v.empty_dir:
+                    vinfo["type"] = "EmptyDir"
+                    vinfo["emptyDir"] = {}
+                    if v.empty_dir.size_limit:
+                        vinfo["emptyDir"]["sizeLimit"] = v.empty_dir.size_limit
                 volumes.append(vinfo)
 
             return {
+                "metadata": {
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
-                "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
-                "desired_number_scheduled": response.status.desired_number_scheduled or 0,
-                "current_number_scheduled": response.status.current_number_scheduled or 0,
-                "number_ready": response.status.number_ready or 0,
-                "labels": response.metadata.labels,
-                "selector": response.spec.selector.match_labels,
+                    "labels": response.metadata.labels or {},
+                    "annotations": response.metadata.annotations or {},
+                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                },
+                "spec": {
+                    "selector": response.spec.selector.match_labels or {},
+                    "template": {
+                        "metadata": {
+                            "labels": response.spec.template.metadata.labels or {}
+                        },
+                        "spec": {
                 "containers": containers,
                 "volumes": volumes
+                        }
+                    }
+                },
+                "status": {
+                    "desired_number_scheduled": response.status.desired_number_scheduled or 0,
+                    "current_number_scheduled": response.status.current_number_scheduled or 0,
+                    "number_ready": response.status.number_ready or 0
+                }
             }
             
         except ApiException as e:
@@ -1839,13 +2088,36 @@ class KubernetesAPIService:
                 containers.append({
                     "name": c.name,
                     "image": c.image,
+                    "imagePullPolicy": c.image_pull_policy,
                     "command": c.command,
                     "args": c.args,
-                    "env": [{"name": e.name, "value": e.value} for e in (c.env or [])],
+                    "env": [
+                        {
+                            "name": env.name,
+                            "value": env.value,
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": env.value_from.secret_key_ref.name,
+                                    "key": env.value_from.secret_key_ref.key
+                                } if env.value_from and env.value_from.secret_key_ref else None,
+                                "configMapKeyRef": {
+                                    "name": env.value_from.config_map_key_ref.name,
+                                    "key": env.value_from.config_map_key_ref.key
+                                } if env.value_from and env.value_from.config_map_key_ref else None
+                            } if env.value_from else None
+                        }
+                        for env in (c.env or [])
+                    ],
                     "resources": {
-                        "limits": c.resources.limits if c.resources and c.resources.limits else {},
-                        "requests": c.resources.requests if c.resources and c.resources.requests else {}
-                    }
+                        "requests": {
+                            "memory": c.resources.requests.get("memory") if c.resources and c.resources.requests else None,
+                            "cpu": c.resources.requests.get("cpu") if c.resources and c.resources.requests else None
+                        } if c.resources and c.resources.requests else {},
+                        "limits": {
+                            "memory": c.resources.limits.get("memory") if c.resources and c.resources.limits else None,
+                            "cpu": c.resources.limits.get("cpu") if c.resources and c.resources.limits else None
+                        } if c.resources and c.resources.limits else {}
+                    } if c.resources else {}
                 })
             # 其他 Pod 级别信息
             pod_spec = pod_template.spec
@@ -1856,21 +2128,34 @@ class KubernetesAPIService:
                 "volumes": [v.name for v in (pod_spec.volumes or [])]
             }
             return {
+                "metadata": {
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
-                "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "labels": response.metadata.labels or {},
+                    "annotations": response.metadata.annotations or {},
+                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                },
+                "spec": {
                 "completions": response.spec.completions,
                 "parallelism": response.spec.parallelism,
+                    "backoffLimit": response.spec.backoff_limit,
+                    "template": {
+                        "metadata": {
+                            "labels": pod_template.metadata.labels or {}
+                        } if pod_template.metadata else {},
+                        "spec": {
+                            "containers": containers,
+                            "restartPolicy": pod_spec.restart_policy
+                        }
+                    }
+                },
+                "status": {
                 "active": response.status.active or 0,
                 "succeeded": response.status.succeeded or 0,
                 "failed": response.status.failed or 0,
-                "labels": response.metadata.labels,
                 "completion_time": to_local_time_str(response.status.completion_time, 8) if response.status.completion_time else None,
-                "start_time": to_local_time_str(response.status.start_time, 8) if response.status.start_time else None,
-                "backoff_limit": response.spec.backoff_limit,
-                "containers": containers,
-                "pod_template": pod_info
+                    "start_time": to_local_time_str(response.status.start_time, 8) if response.status.start_time else None
+                }
             }
         
         except ApiException as e:
@@ -2110,13 +2395,36 @@ class KubernetesAPIService:
                 containers.append({
                     "name": c.name,
                     "image": c.image,
+                    "imagePullPolicy": c.image_pull_policy,
                     "command": c.command,
                     "args": c.args,
-                    "env": [{"name": e.name, "value": e.value} for e in (c.env or [])],
+                    "env": [
+                        {
+                            "name": env.name,
+                            "value": env.value,
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": env.value_from.secret_key_ref.name,
+                                    "key": env.value_from.secret_key_ref.key
+                                } if env.value_from and env.value_from.secret_key_ref else None,
+                                "configMapKeyRef": {
+                                    "name": env.value_from.config_map_key_ref.name,
+                                    "key": env.value_from.config_map_key_ref.key
+                                } if env.value_from and env.value_from.config_map_key_ref else None
+                            } if env.value_from else None
+                        }
+                        for env in (c.env or [])
+                    ],
                     "resources": {
-                        "limits": c.resources.limits if c.resources and c.resources.limits else {},
-                        "requests": c.resources.requests if c.resources and c.resources.requests else {}
-                    }
+                        "requests": {
+                            "memory": c.resources.requests.get("memory") if c.resources and c.resources.requests else None,
+                            "cpu": c.resources.requests.get("cpu") if c.resources and c.resources.requests else None
+                        } if c.resources and c.resources.requests else {},
+                        "limits": {
+                            "memory": c.resources.limits.get("memory") if c.resources and c.resources.limits else None,
+                            "cpu": c.resources.limits.get("cpu") if c.resources and c.resources.limits else None
+                        } if c.resources and c.resources.limits else {}
+                    } if c.resources else {}
                 })
             # 其他 Pod 级别信息
             pod_spec = pod_template.spec
@@ -2127,19 +2435,36 @@ class KubernetesAPIService:
                 "volumes": [v.name for v in (pod_spec.volumes or [])]
             }
             return {
+                "metadata": {
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
-                "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "labels": response.metadata.labels or {},
+                    "annotations": response.metadata.annotations or {},
+                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                },
+                "spec": {
                 "schedule": response.spec.schedule,
                 "suspend": response.spec.suspend or False,
-                "active_jobs": len(response.status.active) if response.status.active else 0,
-                "last_schedule_time": to_local_time_str(response.status.last_schedule_time, 8) if response.status.last_schedule_time else None,
-                "labels": response.metadata.labels,
-                "concurrency_policy": response.spec.concurrency_policy,
-                "starting_deadline_seconds": response.spec.starting_deadline_seconds,
+                    "concurrencyPolicy": response.spec.concurrency_policy,
+                    "startingDeadlineSeconds": response.spec.starting_deadline_seconds,
+                    "jobTemplate": {
+                        "spec": {
+                            "template": {
+                                "metadata": {
+                                    "labels": pod_template.metadata.labels or {}
+                                } if pod_template.metadata else {},
+                                "spec": {
                 "containers": containers,
-                "pod_template": pod_info
+                                    "restartPolicy": pod_spec.restart_policy
+                                }
+                            }
+                        }
+                    }
+                },
+                "status": {
+                    "active_jobs": len(response.status.active) if response.status.active else 0,
+                    "last_schedule_time": to_local_time_str(response.status.last_schedule_time, 8) if response.status.last_schedule_time else None
+                }
             }
 
         except ApiException as e:
@@ -2439,36 +2764,46 @@ class KubernetesAPIService:
             )
             
             return {
+                "metadata": {
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
-                "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
                 "labels": response.metadata.labels or {},
                 "annotations": response.metadata.annotations or {},
-                "class_name": response.spec.ingress_class_name,
+                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                },
+                "spec": {
+                    "ingressClassName": response.spec.ingress_class_name,
                 "rules": [
                     {
                         "host": rule.host,
+                            "http": {
                         "paths": [
                             {
                                 "path": path.path,
-                                "path_type": path.path_type,
-                                "service_name": path.backend.service.name,
-                                "service_port": path.backend.service.port.number
+                                        "pathType": path.path_type,
+                                        "backend": {
+                                            "service": {
+                                                "name": path.backend.service.name,
+                                                "port": {"number": path.backend.service.port.number}
+                                            }
+                                        }
                             }
                             for path in (rule.http.paths or [])
-                        ] if rule.http else []
+                                ]
+                            } if rule.http else {}
                     }
                     for rule in (response.spec.rules or [])
                 ],
                 "tls": [
                     {
-                        "secret_name": tls.secret_name,
+                            "secretName": tls.secret_name,
                         "hosts": tls.hosts or []
                     }
                     for tls in (response.spec.tls or [])
-                ],
-                "load_balancer": {
+                    ]
+                },
+                "status": {
+                    "loadBalancer": {
                     "ingress": [
                         {
                             "ip": lb.ip,
@@ -2476,6 +2811,7 @@ class KubernetesAPIService:
                         }
                         for lb in (response.status.load_balancer.ingress or [])
                     ] if response.status.load_balancer else []
+                    }
                 }
             }
             
@@ -3215,19 +3551,24 @@ class KubernetesAPIService:
             )
             
             return {
+                "metadata": {
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
-                "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
                 "labels": response.metadata.labels or {},
                 "annotations": response.metadata.annotations or {},
-                "access_modes": response.spec.access_modes or [],
-                "requests": response.spec.resources.requests or {} if response.spec.resources else {},
-                "limits": response.spec.resources.limits or {} if response.spec.resources else {},
-                "storage_class_name": response.spec.storage_class_name,
-                "volume_mode": response.spec.volume_mode,
-                "volume_name": response.spec.volume_name,
-                "status": response.status.phase,
+                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                },
+                "spec": {
+                    "accessModes": response.spec.access_modes or [],
+                    "resources": {
+                        "requests": response.spec.resources.requests or {} if response.spec.resources else {}
+                    } if response.spec.resources else {"requests": {}},
+                    "storageClassName": response.spec.storage_class_name,
+                    "volumeMode": response.spec.volume_mode,
+                    "volumeName": response.spec.volume_name
+                },
+                "status": {
+                    "phase": response.status.phase,
                 "capacity": response.status.capacity or {} if response.status else {},
                 "conditions": [
                     {
@@ -3240,6 +3581,7 @@ class KubernetesAPIService:
                     }
                     for condition in (response.status.conditions or [])
                 ] if response.status else []
+                }
             }
             
         except ApiException as e:
@@ -3681,12 +4023,15 @@ class KubernetesAPIService:
             # 转换规则
             for rule in role.rules:
                 rule_dict = {
-                    "api_groups": rule.api_groups,
-                    "resources": rule.resources,
-                    "verbs": rule.verbs,
-                    "resource_names": rule.resource_names,
-                    "non_resource_urls": getattr(rule, 'non_resource_urls', [])
+                    "api_groups": rule.api_groups or [],
+                    "resources": rule.resources or [],
+                    "verbs": rule.verbs or []
                 }
+                # 只有当这些字段有值时才添加
+                if rule.resource_names:
+                    rule_dict["resource_names"] = rule.resource_names
+                if getattr(rule, 'non_resource_urls', None):
+                    rule_dict["non_resource_urls"] = rule.non_resource_urls
                 role_dict["rules"].append(rule_dict)
             
             return role_dict
@@ -4061,10 +4406,14 @@ class KubernetesAPIService:
             for subject in rb.subjects:
                 subject_dict = {
                     "kind": subject.kind,
-                    "name": subject.name,
-                    "api_group": subject.api_group,
-                    "namespace": subject.namespace
+                    "name": subject.name
                 }
+                # 只有当apiGroup不为空且不为None时才添加
+                if subject.api_group:
+                    subject_dict["api_group"] = subject.api_group
+                # 只有当namespace不为空且不为None时才添加
+                if subject.namespace:
+                    subject_dict["namespace"] = subject.namespace
                 rb_dict["subjects"].append(subject_dict)
             
             return rb_dict
