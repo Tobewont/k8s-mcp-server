@@ -24,7 +24,31 @@ class KubernetesAPIService:
         self.extensions_v1beta1_api = None
         self.batch_v1_api = None
         self.batch_v1beta1_api = None
+        
+        # 验证功能开关
+        self.enable_validation = True
+        self._advanced_service = None
     
+    def set_validation_service(self, advanced_service):
+        """设置验证服务"""
+        self._advanced_service = advanced_service
+    
+    async def _execute_with_validation(self, operation_type: str, resource_type: str, 
+                                     resource_name: str, namespace: str = "default", 
+                                     resource_data: Dict = None, original_operation=None, **kwargs):
+        """执行操作并集成验证功能"""
+        if self.enable_validation and self._advanced_service:
+            # 使用advanced_service的验证功能
+            return await self._advanced_service._execute_with_validation(
+                operation_type, resource_type, resource_name, namespace, resource_data, **kwargs
+            )
+        else:
+            # 直接执行原始操作
+            if original_operation:
+                return await original_operation()
+            else:
+                return {"result": {"error": "未提供原始操作方法"}}
+        
     def _extract_volume_info(self, volume) -> Dict:
         """统一的卷信息提取方法"""
         vinfo = {"name": volume.name}
@@ -376,7 +400,7 @@ class KubernetesAPIService:
             # 提取容器和卷信息
             containers = [self._extract_container_info(c) for c in deployment.spec.template.spec.containers]
             volumes = [self._extract_volume_info(v) for v in (deployment.spec.template.spec.volumes or [])]
-
+            
             return {
                 "metadata": {
                     "name": deployment.metadata.name,

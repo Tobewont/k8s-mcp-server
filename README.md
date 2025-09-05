@@ -2,18 +2,19 @@
 
 ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![k8s-version](https://img.shields.io/badge/k8s-v1.25%2B-orange) ![license](https://img.shields.io/badge/license-MIT-green)
 
-基于 FastMCP 框架的 Kubernetes 集群管理服务器，提供完整的 Kubernetes API 操作功能。
+基于 FastMCP 框架的 Kubernetes MCP Server，提供完整的 Kubernetes API 操作功能。
 
 ## 🔥 主要特性
 
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
-- **全面的 K8s 操作**：支持 130+ 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **全面的 K8s 操作**：支持 127+ 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
 - **双重传输协议**：同时支持 SSE 和 Stdio 两种传输方式
 - **容器化部署**：支持 Docker 和 Kubernetes 部署，包含完整的 k8s 清单文件
+- **变更验证预览**：自动验证资源操作并显示具体的变更内容，提供操作前的详细预览
 
 ## ⚡ 快速开始
 
@@ -83,8 +84,7 @@ k8s-mcp-server/
 │   ├── diagnostic_tools.py      # 集群诊断工具
 │   ├── batch_tools.py           # 批量操作工具
 │   ├── backup_tools.py          # 备份恢复工具
-│   ├── rbac_tools.py            # RBAC管理工具
-│   └── validation_tools.py      # 资源操作验证工具
+│   └── rbac_tools.py            # RBAC管理工具
 ├── utils/
 │   ├── __init__.py
 │   ├── cluster_config.py        # 集群配置管理类
@@ -377,58 +377,29 @@ k8s-mcp-server/
 - `bind_user_to_role()` - 将用户绑定到角色
 - `bind_user_to_cluster_role()` - 将用户绑定到集群角色
 
-### 资源操作验证工具 (validation_tools.py)
+### 变更验证预览系统
 
-提供操作前后的对比和验证功能，支持预览变更效果，涵盖所有主要 Kubernetes 资源类型：
+系统内置了自动的资源操作验证和预览功能，自动集成到所有写操作中：
 
-#### 工作负载验证
-- `validate_deployment_update()` - 验证Deployment更新操作
-- `preview_deployment_changes()` - 预览Deployment变更效果
-- `validate_statefulset_update()` - 验证StatefulSet更新操作
-- `preview_statefulset_changes()` - 预览StatefulSet变更效果
-- `validate_daemonset_update()` - 验证DaemonSet更新操作
-- `preview_daemonset_changes()` - 预览DaemonSet变更效果
-- `validate_job_update()` - 验证Job更新操作
-- `preview_job_changes()` - 预览Job变更效果
-- `validate_cronjob_update()` - 验证CronJob更新操作
-- `preview_cronjob_changes()` - 预览CronJob变更效果
+#### 核心特性
+- **自动验证**：所有创建、更新、删除操作自动执行验证检查
+- **具体预览**：显示详细的变更内容，而非模糊的数量描述
+- **操作支持性检查**：验证特定资源类型是否支持指定操作
+- **风险提示**：删除操作显示不可逆风险警告
 
-#### 网络和配置验证
-- `validate_service_update()` - 验证Service更新操作
-- `preview_service_changes()` - 预览Service变更效果
-- `validate_ingress_update()` - 验证Ingress更新操作
-- `preview_ingress_changes()` - 预览Ingress变更效果
-- `validate_configmap_update()` - 验证ConfigMap更新操作
-- `preview_configmap_changes()` - 预览ConfigMap变更效果
-- `validate_secret_update()` - 验证Secret更新操作
-- `preview_secret_changes()` - 预览Secret变更效果
+#### 预览输出示例
+- **具体变更**：`labels.version: 1.0 → 2.0`
+- **新增内容**：`data.redis.conf: 新增 = host: redis\nport: 6379`
+- **RBAC规则**：`rules: 新增规则 [batch] jobs -> get,list,create`
+- **删除提醒**：`⚠️ 将删除资源 configmap/test，此操作不可逆`
 
-#### 存储验证
-- `validate_storageclass_update()` - 验证StorageClass更新操作
-- `preview_storageclass_changes()` - 预览StorageClass变更效果
-- `validate_persistentvolume_update()` - 验证PersistentVolume更新操作
-- `preview_persistentvolume_changes()` - 预览PersistentVolume变更效果
-- `validate_persistentvolumeclaim_update()` - 验证PVC更新操作
-- `preview_persistentvolumeclaim_changes()` - 预览PVC变更效果
-
-#### RBAC验证
-- `validate_serviceaccount_update()` - 验证ServiceAccount更新操作
-- `preview_serviceaccount_changes()` - 预览ServiceAccount变更效果
-- `validate_role_update()` - 验证Role更新操作
-- `preview_role_changes()` - 预览Role变更效果
-- `validate_clusterrole_update()` - 验证ClusterRole更新操作
-- `preview_clusterrole_changes()` - 预览ClusterRole变更效果
-- `validate_rolebinding_update()` - 验证RoleBinding更新操作
-- `preview_rolebinding_changes()` - 预览RoleBinding变更效果
-- `validate_clusterrolebinding_update()` - 验证ClusterRoleBinding更新操作
-- `preview_clusterrolebinding_changes()` - 预览ClusterRoleBinding变更效果
-
-#### 命名空间验证
-- `validate_namespace_update()` - 验证Namespace更新操作
-- `preview_namespace_changes()` - 预览Namespace变更效果
-
-#### 通用工具
-- `get_resource_changes()` - 获取资源的变化对比
+#### 支持的资源类型
+涵盖所有主要 Kubernetes 资源的验证和预览：
+- **工作负载**：Deployment, StatefulSet, DaemonSet, Job, CronJob
+- **网络服务**：Service, Ingress
+- **配置存储**：ConfigMap, Secret, PVC, PV, StorageClass
+- **权限管理**：ServiceAccount, Role, ClusterRole, RoleBinding, ClusterRoleBinding
+- **集群资源**：Namespace, Node
 
 ### 🔥 特殊功能
 
@@ -439,7 +410,7 @@ k8s-mcp-server/
 - **批量资源操作**：支持批量创建、更新、删除多个资源，支持事务回滚
 - **备份恢复**：支持命名空间和单个资源的备份恢复，按集群/命名空间/资源类型层级存储
 - **RBAC管理**：完整的角色和权限管理，支持角色模板和用户绑定
-- **操作验证**：提供操作前后的对比和验证，支持预览变更效果
+- **变更验证预览**：自动验证所有写操作并显示具体变更内容，提供详细的操作预览
 
 ## 📝 使用示例
 
@@ -535,18 +506,11 @@ k8s-mcp-server/
   }
 }
 
-// 验证Deployment扩缩容
-{
-  "method": "tools/call",
-  "params": {
-    "name": "validate_deployment_update",
-    "arguments": {
-      "name": "my-app",
-      "namespace": "default",
-      "replicas": 5
-    }
-  }
-}
+// 批量操作会自动显示验证和预览信息
+// 更新操作会显示具体的变更内容，如：
+// "📋 预览变化:"
+// "   • replicas: 3 → 5"
+// "   • labels.version: 1.0 → 2.0"
 
 // 批量创建资源
 {
@@ -922,7 +886,7 @@ kubectl logs -f deployment/k8s-mcp-server
 
 ### 最新版本特性
 
-- ✅ **130+ 个工具函数**：涵盖所有主要 Kubernetes 资源
+- ✅ **127+ 个工具函数**：涵盖所有主要 Kubernetes 资源
 - ✅ **优雅删除支持**：部分删除函数支持 `grace_period_seconds` 参数
 - ✅ **容器化支持**：提供 Docker 和 Kubernetes 部署
 - ✅ **数据持久化**：支持配置和日志的持久化存储
@@ -931,6 +895,7 @@ kubectl logs -f deployment/k8s-mcp-server
 - ✅ **批量操作**：支持18种资源类型的批量操作，包含事务回滚
 - ✅ **RBAC管理**：完整的角色和权限管理系统
 - ✅ **备份恢复**：支持命名空间和资源级别的备份恢复
+- ✅ **变更验证预览**：自动验证所有写操作，显示具体变更内容和操作风险
 
 
 ## ⚠️ 注意事项
