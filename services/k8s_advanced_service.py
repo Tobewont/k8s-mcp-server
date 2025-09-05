@@ -1079,7 +1079,7 @@ class KubernetesAdvancedService:
         
         print(f"✅ 批量删除完成: {len(results['success'])} 成功, {len(results['failed'])} 失败\n")
         return results
-    
+
     # ==================== 备份恢复相关方法 ====================
     
     def _get_backup_path(self, cluster_name: str, namespace: str = None, 
@@ -1551,9 +1551,10 @@ class KubernetesAdvancedService:
 
     # ==================== RBAC相关方法 ====================
     
-    async def create_developer_role(self, namespace: str, role_name: str = "developer") -> Dict:
-        """创建开发者角色（只读权限）"""
-        rules = [
+    def _get_role_template_rules(self, role_type: str) -> List[Dict]:
+        """获取角色模板的规则定义"""
+        templates = {
+            "developer": [
             {
                 "api_groups": [""],
                 "resources": ["pods", "services", "configmaps", "persistentvolumeclaims"],
@@ -1574,13 +1575,8 @@ class KubernetesAdvancedService:
                 "resources": ["jobs", "cronjobs"],
                 "verbs": ["get", "list", "watch"]
             }
-        ]
-        
-        return await self.k8s_service.create_role(role_name, namespace, rules)
-    
-    async def create_admin_role(self, namespace: str, role_name: str = "admin") -> Dict:
-        """创建管理员角色（完全权限）"""
-        rules = [
+            ],
+            "admin": [
             {
                 "api_groups": [""],
                 "resources": ["*"],
@@ -1606,13 +1602,8 @@ class KubernetesAdvancedService:
                 "resources": ["*"],
                 "verbs": ["*"]
             }
-        ]
-        
-        return await self.k8s_service.create_role(role_name, namespace, rules)
-    
-    async def create_operator_role(self, namespace: str, role_name: str = "operator") -> Dict:
-        """创建运维角色（管理权限，但不包括RBAC）"""
-        rules = [
+            ],
+            "operator": [
             {
                 "api_groups": [""],
                 "resources": ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"],
@@ -1633,9 +1624,427 @@ class KubernetesAdvancedService:
                 "resources": ["jobs", "cronjobs"],
                 "verbs": ["*"]
             }
-        ]
+            ],
+            "readonly": [
+                {
+                    "api_groups": [""],
+                    "resources": ["pods", "services", "configmaps", "persistentvolumeclaims", "events"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": ["apps"],
+                    "resources": ["deployments", "statefulsets", "daemonsets", "replicasets"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": ["networking.k8s.io"],
+                    "resources": ["ingresses", "networkpolicies"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": ["batch"],
+                    "resources": ["jobs", "cronjobs"],
+                    "verbs": ["get", "list", "watch"]
+                }
+            ],
+            "deployer": [
+                {
+                    "api_groups": [""],
+                    "resources": ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"],
+                    "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]
+                },
+                {
+                    "api_groups": ["apps"],
+                    "resources": ["deployments", "statefulsets", "daemonsets"],
+                    "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]
+                },
+                {
+                    "api_groups": ["networking.k8s.io"],
+                    "resources": ["ingresses"],
+                    "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]
+                },
+                {
+                    "api_groups": ["batch"],
+                    "resources": ["jobs", "cronjobs"],
+                    "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]
+                },
+                {
+                    "api_groups": [""],
+                    "resources": ["events"],
+                    "verbs": ["get", "list", "watch"]
+                }
+            ],
+            "monitor": [
+                {
+                    "api_groups": [""],
+                    "resources": ["*"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": ["apps"],
+                    "resources": ["*"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": ["networking.k8s.io"],
+                    "resources": ["*"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": ["batch"],
+                    "resources": ["*"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": ["metrics.k8s.io"],
+                    "resources": ["*"],
+                    "verbs": ["get", "list"]
+                }
+            ],
+            "debug": [
+                {
+                    "api_groups": [""],
+                    "resources": ["pods"],
+                    "verbs": ["get", "list", "watch"]
+                },
+                {
+                    "api_groups": [""],
+                    "resources": ["pods/log"],
+                    "verbs": ["get", "list"]
+                },
+                {
+                    "api_groups": [""],
+                    "resources": ["pods/exec"],
+                    "verbs": ["create"]
+                },
+                {
+                    "api_groups": [""],
+                    "resources": ["pods/portforward"],
+                    "verbs": ["create"]
+                },
+                {
+                    "api_groups": [""],
+                    "resources": ["events"],
+                    "verbs": ["get", "list", "watch"]
+                }
+            ]
+        }
+        
+        return templates.get(role_type, [])
+    
+    async def create_role_template(self, role_type: str, namespace: str, role_name: str = None) -> Dict:
+        """创建角色模板
+        
+        Args:
+            role_type: 角色类型 (developer/admin/operator/readonly/deployer/monitor/debug)
+            namespace: 命名空间
+            role_name: 角色名称，默认使用role_type
+        """
+        if not role_name:
+            role_name = role_type
+        
+        rules = self._get_role_template_rules(role_type)
+        if not rules:
+            raise ValueError(f"不支持的角色类型: {role_type}")
         
         return await self.k8s_service.create_role(role_name, namespace, rules)
+
+
+    def _analyze_role_permissions(self, rules: List[Dict]) -> Dict:
+        """分析角色权限特征
+        
+        Returns:
+            Dict containing permission analysis including:
+            - is_admin: 是否为管理员权限
+            - is_readonly: 是否为只读权限
+            - permission_level: 权限级别 (admin/write/read)
+        """
+        if not rules:
+            return {"is_admin": False, "is_readonly": False, "permission_level": "none"}
+        
+        has_wildcard_resources = False
+        has_wildcard_verbs = False
+        has_write_verbs = False
+        has_rbac_permissions = False
+        
+        write_verbs = {"create", "update", "patch", "delete", "deletecollection"}
+        readonly_verbs = {"get", "list", "watch"}
+        
+        for rule in rules:
+            resources = rule.get("resources", [])
+            verbs = set(rule.get("verbs", []))
+            api_groups = rule.get("api_groups", rule.get("apiGroups", []))
+            
+            # 检查通配符
+            if "*" in resources:
+                has_wildcard_resources = True
+            if "*" in verbs:
+                has_wildcard_verbs = True
+            
+            # 检查写权限
+            if verbs & write_verbs or "*" in verbs:
+                has_write_verbs = True
+            
+            # 检查RBAC权限
+            if "rbac.authorization.k8s.io" in api_groups and (verbs & write_verbs or "*" in verbs):
+                has_rbac_permissions = True
+        
+        # 判断权限级别
+        is_admin = (has_wildcard_resources and has_wildcard_verbs) or has_rbac_permissions
+        is_readonly = not has_write_verbs and not has_wildcard_verbs
+        
+        if is_admin:
+            permission_level = "admin"
+        elif has_write_verbs:
+            permission_level = "write"
+        elif is_readonly:
+            permission_level = "read"
+        else:
+            permission_level = "none"
+        
+        return {
+            "is_admin": is_admin,
+            "is_readonly": is_readonly,
+            "permission_level": permission_level,
+            "has_wildcard_resources": has_wildcard_resources,
+            "has_wildcard_verbs": has_wildcard_verbs,
+            "has_write_verbs": has_write_verbs,
+            "has_rbac_permissions": has_rbac_permissions
+        }
+
+
+    async def analyze_serviceaccount_permissions(self, service_account_name: str, namespace: str) -> Dict:
+        """分析ServiceAccount的权限"""
+        try:
+            permissions = {"roles": [], "cluster_roles": []}
+            
+            # 查找ServiceAccount的RoleBinding
+            role_bindings = await self.k8s_service.list_role_bindings(namespace)
+            for rb in role_bindings:
+                if rb.get("subjects"):
+                    for subject in rb["subjects"]:
+                        if (subject.get("kind") == "ServiceAccount" and 
+                            subject.get("name") == service_account_name and
+                            subject.get("namespace", namespace) == namespace):
+                            role_ref = rb.get("role_ref", {})
+                            permissions["roles"].append({
+                                "binding_name": rb["name"],
+                                "role_name": role_ref.get("name"),
+                                "role_kind": role_ref.get("kind"),
+                                "namespace": namespace
+                            })
+            
+            # 查找ServiceAccount的ClusterRoleBinding
+            cluster_role_bindings = await self.k8s_service.list_cluster_role_bindings()
+            for crb in cluster_role_bindings:
+                if crb.get("subjects"):
+                    for subject in crb["subjects"]:
+                        if (subject.get("kind") == "ServiceAccount" and 
+                            subject.get("name") == service_account_name and
+                            subject.get("namespace", namespace) == namespace):
+                            role_ref = crb.get("role_ref", {})
+                            permissions["cluster_roles"].append({
+                                "binding_name": crb["name"],
+                                "role_name": role_ref.get("name"),
+                                "role_kind": role_ref.get("kind")
+                            })
+            
+            # 获取具体权限详情
+            for role_info in permissions["roles"]:
+                try:
+                    if role_info["role_kind"] == "Role":
+                        role_detail = await self.k8s_service.get_role(
+                            role_info["role_name"], role_info["namespace"]
+                        )
+                        role_info["rules"] = role_detail.get("rules", [])
+                    elif role_info["role_kind"] == "ClusterRole":
+                        role_detail = await self.k8s_service.get_cluster_role(role_info["role_name"])
+                        role_info["rules"] = role_detail.get("rules", [])
+                except:
+                    role_info["rules"] = []
+            
+            for role_info in permissions["cluster_roles"]:
+                try:
+                    role_detail = await self.k8s_service.get_cluster_role(role_info["role_name"])
+                    role_info["rules"] = role_detail.get("rules", [])
+                except:
+                    role_info["rules"] = []
+            
+            return {
+                "service_account": service_account_name,
+                "namespace": namespace,
+                "permissions": permissions,
+                "summary": {
+                    "total_roles": len(permissions["roles"]),
+                    "total_cluster_roles": len(permissions["cluster_roles"])
+                }
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def check_serviceaccount_permission_conflicts(self, namespace: str) -> Dict:
+        """检查命名空间中ServiceAccount的权限冲突"""
+        try:
+            conflicts = []
+            
+            # 获取所有RoleBinding
+            role_bindings = await self.k8s_service.list_role_bindings(namespace)
+            
+            # 按ServiceAccount分组检查权限
+            sa_permissions = {}
+            for rb in role_bindings:
+                if rb.get("subjects"):
+                    for subject in rb["subjects"]:
+                        if subject.get("kind") == "ServiceAccount":
+                            sa_name = subject.get("name")
+                            sa_namespace = subject.get("namespace", namespace)
+                            sa_key = f"{sa_namespace}/{sa_name}"
+                            
+                            if sa_key not in sa_permissions:
+                                sa_permissions[sa_key] = []
+                            
+                            role_ref = rb.get("role_ref", {})
+                            sa_permissions[sa_key].append({
+                                "binding": rb["name"],
+                                "role_name": role_ref.get("name"),
+                                "role_kind": role_ref.get("kind")
+                            })
+            
+            # 检查每个ServiceAccount的权限冲突
+            for sa_key, permissions in sa_permissions.items():
+                if len(permissions) > 1:
+                    # 检查重复的角色绑定
+                    role_names = [p["role_name"] for p in permissions]
+                    duplicates = set([x for x in role_names if role_names.count(x) > 1])
+                    if duplicates:
+                        conflicts.append({
+                            "type": "duplicate_bindings",
+                            "service_account": sa_key,
+                            "message": f"ServiceAccount {sa_key} 被重复绑定到角色: {', '.join(duplicates)}",
+                            "permissions": permissions
+                        })
+                    
+                    # 基于实际权限规则检查冲突
+                    try:
+                        role_analyses = []
+                        for perm in permissions:
+                            role_name = perm["role_name"]
+                            role_kind = perm["role_kind"]
+                            
+                            try:
+                                if role_kind == "Role":
+                                    role_detail = await self.k8s_service.get_role(role_name, namespace)
+                                elif role_kind == "ClusterRole":
+                                    role_detail = await self.k8s_service.get_cluster_role(role_name)
+                                else:
+                                    continue
+                                    
+                                rules = role_detail.get("rules", [])
+                                analysis = self._analyze_role_permissions(rules)
+                                analysis["role_name"] = role_name
+                                analysis["role_kind"] = role_kind
+                                role_analyses.append(analysis)
+                            except:
+                                continue
+                        
+                        # 检查是否同时拥有管理员权限和只读权限
+                        admin_roles = [ra for ra in role_analyses if ra["is_admin"]]
+                        readonly_roles = [ra for ra in role_analyses if ra["is_readonly"]]
+                        
+                        if admin_roles and readonly_roles:
+                            admin_role_names = [ra["role_name"] for ra in admin_roles]
+                            readonly_role_names = [ra["role_name"] for ra in readonly_roles]
+                            conflicts.append({
+                                "type": "redundant_permissions",
+                                "service_account": sa_key,
+                                "message": f"ServiceAccount {sa_key} 同时拥有管理员权限({', '.join(admin_role_names)})和只读权限({', '.join(readonly_role_names)})，只读权限是冗余的",
+                                "permissions": permissions,
+                                "admin_roles": admin_role_names,
+                                "readonly_roles": readonly_role_names
+                            })
+                        
+                        # 检查是否有多个管理员角色（可能是冗余的）
+                        if len(admin_roles) > 1:
+                            admin_role_names = [ra["role_name"] for ra in admin_roles]
+                            conflicts.append({
+                                "type": "excessive_admin_permissions",
+                                "service_account": sa_key,
+                                "message": f"ServiceAccount {sa_key} 拥有多个管理员权限角色({', '.join(admin_role_names)})，可能存在冗余",
+                                "permissions": permissions,
+                                "admin_roles": admin_role_names
+                            })
+                            
+                    except Exception as e:
+                        # 如果权限分析失败，记录但不中断整个检查过程
+                        pass
+            
+            return {
+                "namespace": namespace,
+                "conflicts": conflicts,
+                "summary": {
+                    "total_conflicts": len(conflicts),
+                    "service_accounts_checked": len(sa_permissions)
+                }
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def list_role_serviceaccounts(self, role_name: str, namespace: str, role_type: str = "Role") -> Dict:
+        """列出绑定到指定角色的所有ServiceAccount"""
+        try:
+            service_accounts = []
+            
+            if role_type == "Role":
+                # 查找RoleBinding
+                role_bindings = await self.k8s_service.list_role_bindings(namespace)
+                for rb in role_bindings:
+                    role_ref = rb.get("role_ref", {})
+                    if (role_ref.get("kind") == role_type and 
+                        role_ref.get("name") == role_name):
+                        
+                        if rb.get("subjects"):
+                            for subject in rb["subjects"]:
+                                if subject.get("kind") == "ServiceAccount":
+                                    subject_info = {
+                                        "name": subject.get("name"),
+                                        "namespace": subject.get("namespace", namespace),
+                                        "binding": rb["name"]
+                                    }
+                                    service_accounts.append(subject_info)
+            
+            elif role_type == "ClusterRole":
+                # 查找ClusterRoleBinding
+                cluster_role_bindings = await self.k8s_service.list_cluster_role_bindings()
+                for crb in cluster_role_bindings:
+                    role_ref = crb.get("role_ref", {})
+                    if (role_ref.get("kind") == role_type and 
+                        role_ref.get("name") == role_name):
+                        
+                        if crb.get("subjects"):
+                            for subject in crb["subjects"]:
+                                if subject.get("kind") == "ServiceAccount":
+                                    subject_info = {
+                                        "name": subject.get("name"),
+                                        "namespace": subject.get("namespace", ""),
+                                        "binding": crb["name"]
+                                    }
+                                    service_accounts.append(subject_info)
+            
+            return {
+                "role_name": role_name,
+                "role_type": role_type,
+                "namespace": namespace,
+                "service_accounts": service_accounts,
+                "summary": {
+                    "total_service_accounts": len(service_accounts)
+                }
+            }
+            
+        except Exception as e:
+            return {"error": str(e)}
+
 
     # ==================== 资源验证相关方法 ====================
     
@@ -1684,6 +2093,10 @@ class KubernetesAdvancedService:
                     if ns["name"] == resource_name:
                         return ns
                 return {"error": f"命名空间 {resource_name} 不存在"}
+            elif resource_type == "pod":
+                return await self.k8s_service.get_pod(resource_name, namespace)
+            elif resource_type == "node":
+                return await self.k8s_service.get_node(resource_name)
             else:
                 raise ValueError(f"不支持的资源类型: {resource_type}")
         except Exception as e:
@@ -1872,6 +2285,23 @@ class KubernetesAdvancedService:
                 "status": "status.phase",
                 "labels": "metadata.labels",
                 "annotations": "metadata.annotations"
+            },
+            "pod": {
+                "phase": "phase",
+                "ready": "ready",
+                "restart_count": "restart_count",
+                "node_name": "node_name",
+                "labels": "labels",
+                "annotations": "annotations",
+                "containers": lambda r: [c.get("name") for c in r.get("containers", [])]
+            },
+            "node": {
+                "status": "status",
+                "roles": "roles",
+                "version": "version",
+                "os_image": "os_image",
+                "labels": "labels",
+                "annotations": "annotations"
             }
         }
         return configs.get(resource_type, {})
@@ -1893,7 +2323,7 @@ class KubernetesAdvancedService:
     
     def _is_cluster_resource(self, resource_type: str) -> bool:
         """判断是否为集群级别资源"""
-        return resource_type.lower() in ["persistentvolume", "storageclass", "clusterrole", "clusterrolebinding", "namespace"]
+        return resource_type.lower() in ["persistentvolume", "storageclass", "clusterrole", "clusterrolebinding", "namespace", "node"]
     
     def _validate_operation_support(self, resource_type: str, operation: str) -> tuple[bool, str]:
         """验证操作是否支持"""
@@ -2207,4 +2637,4 @@ class KubernetesAdvancedService:
             print(f"❌ 操作失败: {str(e)}\n")
             operation_result["result"] = {"error": str(e)}
             return operation_result
-    
+
