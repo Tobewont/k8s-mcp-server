@@ -25,29 +25,259 @@ class KubernetesAPIService:
         self.batch_v1_api = None
         self.batch_v1beta1_api = None
         
-        # 验证功能开关
-        self.enable_validation = True
+        # 验证服务
         self._advanced_service = None
     
     def set_validation_service(self, advanced_service):
         """设置验证服务"""
         self._advanced_service = advanced_service
     
-    async def _execute_with_validation(self, operation_type: str, resource_type: str, 
-                                     resource_name: str, namespace: str = "default", 
-                                     resource_data: Dict = None, original_operation=None, **kwargs):
-        """执行操作并集成验证功能"""
-        if self.enable_validation and self._advanced_service:
-            # 使用advanced_service的验证功能
-            return await self._advanced_service._execute_with_validation(
-                operation_type, resource_type, resource_name, namespace, resource_data, **kwargs
-            )
-        else:
-            # 直接执行原始操作
+    async def _execute_with_validation_and_preview(self, operation_type: str, resource_type: str, 
+                                                 resource_name: str, namespace: str = "default", 
+                                                 resource_data: Dict = None, original_operation=None, **kwargs):
+        """统一的验证、预览和执行方法"""
+        if not self._advanced_service:
+            # 如果没有验证服务，直接执行原始操作
             if original_operation:
                 return await original_operation()
             else:
-                return {"result": {"error": "未提供原始操作方法"}}
+                raise Exception("验证服务未初始化且未提供原始操作方法")
+        
+        # 执行验证和预览
+        print(f"\n🔍 {operation_type.upper()} {resource_type}/{resource_name}")
+        
+        if operation_type in ["update", "delete"]:
+            validation_result = await self._advanced_service.validate_and_preview_operation(
+                resource_type, resource_name, operation_type, namespace, resource_data
+            )
+            
+            if not validation_result["valid"]:
+                print(validation_result["message"])
+                return {"error": validation_result["message"]}
+            
+            print(validation_result["message"])
+            
+            # 显示变化预览
+            if validation_result["changes"]:
+                print("📋 预览变化:")
+                for change in validation_result["changes"]:
+                    print(change)
+                print()  # 空行分隔
+            
+            # 显示警告
+            for warning in validation_result["warnings"]:
+                print(warning)
+        
+        elif operation_type == "create":
+            # 创建操作只需要基本验证
+            validation_result = await self._advanced_service.validate_and_preview_operation(
+                resource_type, resource_name, operation_type, namespace, resource_data
+            )
+            
+            if not validation_result["valid"]:
+                print(validation_result["message"])
+                return {"error": validation_result["message"]}
+            
+            print(validation_result["message"])
+        
+        print(f"🚀 执行操作...")
+        
+        # 执行实际操作
+        try:
+            result = await original_operation()
+            print(f"✅ 操作成功完成\n")
+            return result
+        except Exception as e:
+            print(f"❌ 操作失败: {e}\n")
+            raise
+    
+    def _build_resource_data_for_validation(self, resource_type: str, name: str, namespace: str, 
+                                          resource: Dict = None, **params) -> Dict:
+        """为验证构建资源数据的通用方法"""
+        if resource:
+            return resource
+        
+        # 根据资源类型构建基础资源数据
+        base_resource = {
+            "apiVersion": self._get_api_version_for_resource(resource_type),
+            "kind": resource_type.capitalize(),
+            "metadata": {"name": name, "namespace": namespace}
+        }
+        
+        # 根据资源类型添加特定字段
+        if resource_type == "deployment":
+            labels = params.get("labels", {"app": name})
+            base_resource.update({
+                "spec": {
+                    "replicas": params.get("replicas", 1),
+                    "selector": {"matchLabels": labels},
+                    "template": {
+                        "metadata": {"labels": labels},
+                        "spec": {
+                            "containers": [{
+                                "name": name,
+                                "image": params.get("image", ""),
+                                "ports": params.get("ports", []),
+                                "env": [{"name": k, "value": str(v)} for k, v in (params.get("env_vars", {})).items()],
+                                "resources": params.get("resources", {})
+                            }]
+                        }
+                    }
+                }
+            })
+        elif resource_type == "statefulset":
+            labels = params.get("labels", {"app": name})
+            base_resource.update({
+                "spec": {
+                    "replicas": params.get("replicas", 1),
+                    "serviceName": params.get("service_name", name),
+                    "selector": {"matchLabels": labels},
+                    "template": {
+                        "metadata": {"labels": labels},
+                        "spec": {
+                            "containers": [{
+                                "name": name,
+                                "image": params.get("image", ""),
+                                "ports": params.get("ports", []),
+                                "env": [{"name": k, "value": str(v)} for k, v in (params.get("env_vars", {})).items()],
+                                "resources": params.get("resources", {})
+                            }]
+                        }
+                    },
+                    "volumeClaimTemplates": params.get("volume_claims", [])
+                }
+            })
+        elif resource_type == "daemonset":
+            labels = params.get("labels", {"app": name})
+            base_resource.update({
+                "spec": {
+                    "selector": {"matchLabels": labels},
+                    "template": {
+                        "metadata": {"labels": labels},
+                        "spec": {
+                            "containers": [{
+                                "name": name,
+                                "image": params.get("image", ""),
+                                "ports": params.get("ports", []),
+                                "env": [{"name": k, "value": str(v)} for k, v in (params.get("env_vars", {})).items()],
+                                "resources": params.get("resources", {})
+                            }]
+                        }
+                    }
+                }
+            })
+        elif resource_type == "service":
+            base_resource.update({
+                "spec": {
+                    "type": params.get("service_type", "ClusterIP"),
+                    "ports": params.get("ports", []),
+                    "selector": params.get("selector", {})
+                }
+            })
+        elif resource_type == "configmap":
+            base_resource.update({
+                "data": params.get("data", {})
+            })
+        elif resource_type == "secret":
+            base_resource.update({
+                "type": params.get("secret_type", "Opaque"),
+                "data": params.get("data", {})
+            })
+        elif resource_type == "job":
+            base_resource.update({
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [{
+                                "name": name,
+                                "image": params.get("image", ""),
+                                "command": params.get("command", []),
+                                "args": params.get("args", [])
+                            }],
+                            "restartPolicy": params.get("restart_policy", "Never")
+                        }
+                    },
+                    "backoffLimit": params.get("backoff_limit", 6)
+                }
+            })
+        elif resource_type == "cronjob":
+            base_resource.update({
+                "spec": {
+                    "schedule": params.get("schedule", ""),
+                    "jobTemplate": {
+                        "spec": {
+                            "template": {
+                                "spec": {
+                                    "containers": [{
+                                        "name": name,
+                                        "image": params.get("image", ""),
+                                        "command": params.get("command", []),
+                                        "args": params.get("args", [])
+                                    }],
+                                    "restartPolicy": params.get("restart_policy", "Never")
+                                }
+                            }
+                        }
+                    },
+                    "suspend": params.get("suspend", False)
+                }
+            })
+        elif resource_type == "ingress":
+            base_resource.update({
+                "spec": {
+                    "rules": params.get("rules", []),
+                    "tls": params.get("tls", []),
+                    "ingressClassName": params.get("ingress_class_name")
+                }
+            })
+        elif resource_type == "persistentvolumeclaim":
+            base_resource.update({
+                "spec": {
+                    "accessModes": params.get("access_modes", ["ReadWriteOnce"]),
+                    "resources": {
+                        "requests": {
+                            "storage": params.get("size", "1Gi")
+                        }
+                    },
+                    "storageClassName": params.get("storage_class_name")
+                }
+            })
+        elif resource_type == "serviceaccount":
+            if params.get("automount_service_account_token") is not None:
+                base_resource["automountServiceAccountToken"] = params.get("automount_service_account_token")
+        elif resource_type == "role":
+            base_resource.update({
+                "rules": params.get("rules", [])
+            })
+        elif resource_type == "rolebinding":
+            base_resource.update({
+                "subjects": params.get("subjects", []),
+                "roleRef": params.get("role_ref", {})
+            })
+        
+        return base_resource
+    
+    def _get_api_version_for_resource(self, resource_type: str) -> str:
+        """获取资源类型的API版本"""
+        api_versions = {
+            "deployment": "apps/v1",
+            "statefulset": "apps/v1", 
+            "daemonset": "apps/v1",
+            "service": "v1",
+            "configmap": "v1",
+            "secret": "v1",
+            "job": "batch/v1",
+            "cronjob": "batch/v1",
+            "ingress": "networking.k8s.io/v1",
+            "persistentvolumeclaim": "v1",
+            "serviceaccount": "v1",
+            "role": "rbac.authorization.k8s.io/v1",
+            "rolebinding": "rbac.authorization.k8s.io/v1",
+            "clusterrole": "rbac.authorization.k8s.io/v1",
+            "clusterrolebinding": "rbac.authorization.k8s.io/v1",
+            "namespace": "v1"
+        }
+        return api_versions.get(resource_type.lower(), "v1")
         
     def _extract_volume_info(self, volume) -> Dict:
         """统一的卷信息提取方法"""
@@ -447,7 +677,17 @@ class KubernetesAPIService:
                           replicas: int = 1, labels: dict = None, env_vars: dict = None,
                           ports: list = None, resources: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Deployment"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "deployment", name, namespace, resource,
+            labels=labels, replicas=replicas, image=image, ports=ports, 
+            env_vars=env_vars, resources=resources
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 # 创建 Deployment
@@ -539,16 +779,58 @@ class KubernetesAPIService:
                 "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
                 "replicas": response.spec.replicas
             }
-            
-        except ApiException as e:
-            raise Exception(f"创建 Deployment 失败: {e}")
+        
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "deployment", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_deployment(self, name: str, namespace: str = "default",
                           image: str = None, replicas: int = None,
                           labels: dict = None, env_vars: dict = None,
                           resources: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Deployment"""
-        try:
+        
+        # 准备资源数据用于验证和预览
+        resource_data = resource if resource else {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {}
+        }
+        
+        # 如果有简化参数，构建完整的资源数据用于预览
+        if not resource:
+            # 获取当前资源状态来构建完整的更新数据
+            current = await self.get_deployment(name, namespace)
+            if current.get("error"):
+                return {"error": current["error"]}
+            
+            # 基于当前状态构建更新后的资源数据
+            resource_data = {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": current.get("metadata", {}),
+                "spec": current.get("spec", {})
+            }
+            
+            # 应用更新参数
+            if image is not None:
+                if "template" in resource_data["spec"] and "spec" in resource_data["spec"]["template"]:
+                    containers = resource_data["spec"]["template"]["spec"].get("containers", [])
+                    if containers:
+                        containers[0]["image"] = image
+            
+            if replicas is not None:
+                resource_data["spec"]["replicas"] = replicas
+                
+            if labels is not None:
+                resource_data["metadata"]["labels"] = {**(resource_data["metadata"].get("labels", {})), **labels}
+                if "template" in resource_data["spec"] and "metadata" in resource_data["spec"]["template"]:
+                    resource_data["spec"]["template"]["metadata"]["labels"] = {**(resource_data["spec"]["template"]["metadata"].get("labels", {})), **labels}
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -610,7 +892,7 @@ class KubernetesAPIService:
                     name=name,
                     namespace=namespace,
                     body=deployment
-            )
+                )
             
             return {
                 "name": response.metadata.name,
@@ -620,14 +902,18 @@ class KubernetesAPIService:
                 "image": response.spec.template.spec.containers[0].image,
                 "status": "updated"
             }
-            
-        except ApiException as e:
-            raise Exception(f"更新 Deployment 失败: {e.reason}")
+        
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "deployment", name, namespace, resource_data, update_operation
+        )
 
     async def delete_deployment(self, name: str, namespace: str = "default", 
                                 grace_period_seconds: int = None) -> Dict[str, Any]:
         """删除 Deployment"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             body = client.V1DeleteOptions(grace_period_seconds=grace_period_seconds) if grace_period_seconds is not None else None
             response = self.apps_v1_api.delete_namespaced_deployment(
                 name=name,
@@ -640,9 +926,11 @@ class KubernetesAPIService:
                 "namespace": namespace,
                 "status": "deleted"
             }
-            
-        except ApiException as e:
-            raise Exception(f"删除 Deployment 失败: {e.reason}")
+        
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "deployment", name, namespace, None, delete_operation
+        )
 
     # ========================== StatefulSet 服务层方法 ==========================
 
@@ -829,7 +1117,17 @@ class KubernetesAPIService:
                            ports: list = None, resources: dict = None,
                            volume_claims: list = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 StatefulSet"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "statefulset", name, namespace, resource,
+            labels=labels, replicas=replicas, image=image, ports=ports, 
+            env_vars=env_vars, resources=resources, volume_claims=volume_claims
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 response = self.apps_v1_api.create_namespaced_stateful_set(
@@ -940,14 +1238,24 @@ class KubernetesAPIService:
                 "replicas": response.spec.replicas
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 StatefulSet 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "statefulset", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_statefulset(self, name: str, namespace: str = "default",
                            image: str = None, replicas: int = None,
                            labels: dict = None, env_vars: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 StatefulSet"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "statefulset", name, namespace, resource,
+            labels=labels, replicas=replicas, image=image, env_vars=env_vars
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -1004,13 +1312,17 @@ class KubernetesAPIService:
                 "replicas": response.spec.replicas
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 StatefulSet 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "statefulset", name, namespace, resource_data, update_operation
+        )
 
     async def delete_statefulset(self, name: str, namespace: str = "default",
                                  grace_period_seconds: int = None) -> Dict[str, Any]:
         """删除 StatefulSet"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             body = client.V1DeleteOptions(grace_period_seconds=grace_period_seconds) if grace_period_seconds is not None else None
             response = self.apps_v1_api.delete_namespaced_stateful_set(
                 name=name,
@@ -1031,8 +1343,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 StatefulSet 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "statefulset", name, namespace, None, delete_operation
+        )
 
     # ========================== DaemonSet 服务层方法 ==========================
 
@@ -1207,7 +1521,16 @@ class KubernetesAPIService:
                          ports: list = None, resources: dict = None,
                          volumes: list = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 DaemonSet"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "daemonset", name, namespace, resource,
+            labels=labels, image=image, ports=ports, env_vars=env_vars, resources=resources
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 response = self.apps_v1_api.create_namespaced_daemon_set(
@@ -1319,14 +1642,24 @@ class KubernetesAPIService:
                 "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 DaemonSet 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "daemonset", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_daemonset(self, name: str, namespace: str = "default",
                          image: str = None, labels: dict = None,
                          env_vars: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 DaemonSet"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "daemonset", name, namespace, resource,
+            labels=labels, image=image, env_vars=env_vars
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -1378,12 +1711,16 @@ class KubernetesAPIService:
                 "uid": response.metadata.uid
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 DaemonSet 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "daemonset", name, namespace, resource_data, update_operation
+        )
 
     async def delete_daemonset(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 DaemonSet"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             response = self.apps_v1_api.delete_namespaced_daemon_set(
                 name=name,
                 namespace=namespace
@@ -1402,8 +1739,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 DaemonSet 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "daemonset", name, namespace, None, delete_operation
+        )
 
     # ========================== Service 服务层方法 ==========================
 
@@ -1508,7 +1847,16 @@ class KubernetesAPIService:
     async def create_service(self, name: str = None, selector: dict = None, ports: list = None,
                        namespace: str = "default", service_type: str = "ClusterIP", resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Service"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "service", name, namespace, resource,
+            selector=selector, ports=ports, service_type=service_type
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 # 创建 Service
@@ -1572,8 +1920,10 @@ class KubernetesAPIService:
                 "cluster_ip": response.spec.cluster_ip
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 Service 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "service", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_service(self, name: str, namespace: str = "default",
                        service_type: str = None, ports: list = None,
@@ -1594,7 +1944,15 @@ class KubernetesAPIService:
         Returns:
             更新后的Service对象
         """
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "service", name, namespace, resource,
+            service_type=service_type, ports=ports, selector=selector
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -1664,14 +2022,16 @@ class KubernetesAPIService:
                 "annotations": response.metadata.annotations or {}
             }
             
-        except ApiException as e:
-            raise Exception(f"更新Service失败: {e}")
-        except Exception as e:
-            raise Exception(f"更新Service时发生错误: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "service", name, namespace, resource_data, update_operation
+        )
     
     async def delete_service(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 Service"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             response = self.v1_api.delete_namespaced_service(
                 name=name,
                 namespace=namespace
@@ -1683,8 +2043,10 @@ class KubernetesAPIService:
                 "status": "deleted"
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 Service 失败: {e.reason}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "service", name, namespace, None, delete_operation
+        )
 
     # ========================== ConfigMap 服务层方法 ==========================
 
@@ -1739,7 +2101,16 @@ class KubernetesAPIService:
     async def create_configmap(self, name: str = None, data: dict = None, namespace: str = "default",
                          labels: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 ConfigMap"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "configmap", name, namespace, resource,
+            data=data, labels=labels
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 # 创建 ConfigMap
@@ -1782,13 +2153,23 @@ class KubernetesAPIService:
                 "data_keys": list(response.data.keys()) if response.data else []
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 ConfigMap 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "configmap", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_configmap(self, name: str, data: dict = None, namespace: str = "default",
                          labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 ConfigMap"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "configmap", name, namespace, resource,
+            data=data, labels=labels
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -1836,12 +2217,16 @@ class KubernetesAPIService:
                 "data_keys": list(response.data.keys()) if response.data else []
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 ConfigMap 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "configmap", name, namespace, resource_data, update_operation
+        )
 
     async def delete_configmap(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 ConfigMap"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             response = self.v1_api.delete_namespaced_config_map(
                 name=name,
                 namespace=namespace
@@ -1860,8 +2245,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 ConfigMap 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "configmap", name, namespace, None, delete_operation
+        )
 
     # ========================== Secret 服务层方法 ==========================
 
@@ -1917,7 +2304,16 @@ class KubernetesAPIService:
     async def create_secret(self, name: str = None, data: dict = None, namespace: str = "default",
                       secret_type: str = "Opaque", labels: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Secret"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "secret", name, namespace, resource,
+            data=data, secret_type=secret_type, labels=labels
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 # 创建 Secret
@@ -1973,13 +2369,23 @@ class KubernetesAPIService:
                 "data_keys": list(response.data.keys()) if response.data else []
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 Secret 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "secret", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_secret(self, name: str, data: dict = None, namespace: str = "default",
                       labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Secret"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "secret", name, namespace, resource,
+            data=data, labels=labels
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             import base64
             
             if resource is not None:
@@ -2036,12 +2442,16 @@ class KubernetesAPIService:
                 "data_keys": list(response.data.keys()) if response.data else []
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 Secret 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "secret", name, namespace, resource_data, update_operation
+        )
 
     async def delete_secret(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 Secret"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             response = self.v1_api.delete_namespaced_secret(
                 name=name,
                 namespace=namespace
@@ -2060,8 +2470,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 Secret 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "secret", name, namespace, None, delete_operation
+        )
 
     # ========================== Job 服务层方法 ==========================
 
@@ -2190,7 +2602,16 @@ class KubernetesAPIService:
                    env_vars: dict = None, resources: dict = None,
                    restart_policy: str = "Never", backoff_limit: int = 6, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Job"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "job", name, namespace, resource,
+            image=image, command=command, args=args, restart_policy=restart_policy, backoff_limit=backoff_limit
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 response = self.batch_v1_api.create_namespaced_job(
@@ -2272,14 +2693,24 @@ class KubernetesAPIService:
                 "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 Job 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "job", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_job(self, name: str, namespace: str = "default",
                         labels: dict = None, annotations: dict = None, 
                         resource: Dict = None) -> Dict[str, Any]:
         """更新 Job（Job的spec字段大多不可变，仅支持labels和annotations）"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "job", name, namespace, resource,
+            labels=labels, annotations=annotations
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 # 确保metadata中包含name和namespace
@@ -2325,12 +2756,16 @@ class KubernetesAPIService:
                 "creation_timestamp": response.metadata.creation_timestamp.strftime("%Y-%m-%d %H:%M:%S") if response.metadata.creation_timestamp else None
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 Job 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "job", name, namespace, resource_data, update_operation
+        )
 
     async def delete_job(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 Job"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             response = self.batch_v1_api.delete_namespaced_job(
                 name=name,
                 namespace=namespace
@@ -2349,8 +2784,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 Job 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "job", name, namespace, None, delete_operation
+        )
 
     # ========================== CronJob 服务层方法 ==========================
 
@@ -2500,7 +2937,17 @@ class KubernetesAPIService:
                        env_vars: dict = None, resources: dict = None,
                        restart_policy: str = "Never", suspend: bool = False, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 CronJob"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "cronjob", name, namespace, resource,
+            image=image, schedule=schedule, command=command, args=args, 
+            restart_policy=restart_policy, suspend=suspend
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 try:
@@ -2608,14 +3055,24 @@ class KubernetesAPIService:
                 "schedule": response.spec.schedule
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 CronJob 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "cronjob", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_cronjob(self, name: str, namespace: str = "default",
                        schedule: str = None, suspend: bool = None,
                        image: str = None, labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 CronJob"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "cronjob", name, namespace, resource,
+            schedule=schedule, suspend=suspend, image=image
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -2693,12 +3150,16 @@ class KubernetesAPIService:
                 "suspend": response.spec.suspend
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 CronJob 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "cronjob", name, namespace, resource_data, update_operation
+        )
 
     async def delete_cronjob(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 CronJob"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             # 尝试使用 batch/v1 API
             try:
                 response = self.batch_v1_api.delete_namespaced_cron_job(
@@ -2725,8 +3186,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 CronJob 失败: {e}") 
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "cronjob", name, namespace, None, delete_operation
+        ) 
 
     # ========================== Ingress 服务层方法 ==========================
 
@@ -2846,7 +3309,16 @@ class KubernetesAPIService:
                        annotations: dict = None, tls: list = None,
                        ingress_class_name: str = None, labels: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 Ingress"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "ingress", name, namespace, resource,
+            rules=rules, tls=tls, ingress_class_name=ingress_class_name
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 response = self.networking_v1_api.create_namespaced_ingress(
@@ -2938,15 +3410,25 @@ class KubernetesAPIService:
                 "class_name": response.spec.ingress_class_name
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 Ingress 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "ingress", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_ingress(self, name: str, namespace: str = "default",
                        rules: list = None, annotations: dict = None,
                        tls: list = None, ingress_class_name: str = None,
                        labels: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 Ingress"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "ingress", name, namespace, resource,
+            rules=rules, tls=tls, ingress_class_name=ingress_class_name
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -3043,12 +3525,16 @@ class KubernetesAPIService:
                 "class_name": response.spec.ingress_class_name
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 Ingress 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "ingress", name, namespace, resource_data, update_operation
+        )
 
     async def delete_ingress(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 Ingress"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             response = self.networking_v1_api.delete_namespaced_ingress(
                 name=name,
                 namespace=namespace
@@ -3067,8 +3553,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 Ingress 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "ingress", name, namespace, None, delete_operation
+        )
 
     # ========================== StorageClass 服务层方法 ==========================
 
@@ -3620,7 +4108,16 @@ class KubernetesAPIService:
                                      labels: dict = None,
                                      annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建 PersistentVolumeClaim"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "persistentvolumeclaim", name, namespace, resource,
+            size=size, access_modes=access_modes, storage_class_name=storage_class_name
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 response = self.v1_api.create_namespaced_persistent_volume_claim(
@@ -3688,8 +4185,10 @@ class KubernetesAPIService:
                 "storage_class_name": response.spec.storage_class_name
             }
             
-        except ApiException as e:
-            raise Exception(f"创建 PersistentVolumeClaim 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "persistentvolumeclaim", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_persistentvolumeclaim(self, name: str, namespace: str = "default",
                                      size: str = None,
@@ -3698,7 +4197,15 @@ class KubernetesAPIService:
                                      labels: dict = None,
                                      annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新 PersistentVolumeClaim"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "persistentvolumeclaim", name, namespace, resource,
+            size=size, access_modes=access_modes, storage_class_name=storage_class_name
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -3759,12 +4266,16 @@ class KubernetesAPIService:
                 "storage_class_name": response.spec.storage_class_name
             }
             
-        except ApiException as e:
-            raise Exception(f"更新 PersistentVolumeClaim 失败: {e}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "persistentvolumeclaim", name, namespace, resource_data, update_operation
+        )
 
     async def delete_persistentvolumeclaim(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除 PersistentVolumeClaim"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             response = self.v1_api.delete_namespaced_persistent_volume_claim(
                 name=name,
                 namespace=namespace
@@ -3783,8 +4294,10 @@ class KubernetesAPIService:
                 "uid": uid
             }
             
-        except ApiException as e:
-            raise Exception(f"删除 PersistentVolumeClaim 失败: {e}") 
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "persistentvolumeclaim", name, namespace, None, delete_operation
+        ) 
 
     # ==================== ServiceAccount 相关方法 ====================
 
@@ -3842,7 +4355,16 @@ class KubernetesAPIService:
                                   image_pull_secrets: List[str] = None,
                                   automount_service_account_token: bool = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建ServiceAccount"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "serviceaccount", name, namespace, resource,
+            automount_service_account_token=automount_service_account_token
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 response = self.v1_api.create_namespaced_service_account(namespace=namespace, body=resource)
@@ -3897,8 +4419,10 @@ class KubernetesAPIService:
                 }
             }
             
-        except ApiException as e:
-            raise Exception(f"创建ServiceAccount失败: {e.reason}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "serviceaccount", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_serviceaccount(self, name: str, namespace: str = "default",
                                   labels: Dict[str, str] = None,
@@ -3907,7 +4431,15 @@ class KubernetesAPIService:
                                   image_pull_secrets: List[str] = None,
                                   automount_service_account_token: bool = None, resource: Dict = None) -> Dict[str, Any]:
         """更新ServiceAccount"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "serviceaccount", name, namespace, resource,
+            automount_service_account_token=automount_service_account_token
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -3965,13 +4497,17 @@ class KubernetesAPIService:
                 }
             }
             
-        except ApiException as e:
-            raise Exception(f"更新ServiceAccount失败: {e.reason}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "serviceaccount", name, namespace, resource_data, update_operation
+        )
 
     async def delete_serviceaccount(self, name: str, namespace: str = "default",
                                   grace_period_seconds: int = None) -> Dict[str, Any]:
         """删除ServiceAccount"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             delete_options = client.V1DeleteOptions()
             if grace_period_seconds is not None:
                 delete_options.grace_period_seconds = grace_period_seconds
@@ -3987,8 +4523,10 @@ class KubernetesAPIService:
                 "message": f"ServiceAccount {name} 删除成功"
             }
             
-        except ApiException as e:
-            raise Exception(f"删除ServiceAccount失败: {e.reason}")
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "serviceaccount", name, namespace, None, delete_operation
+        )
 
     # ========================== RBAC 服务层方法 ==========================
 
@@ -4065,7 +4603,16 @@ class KubernetesAPIService:
     async def create_role(self, name: str = None, namespace: str = "default", rules: list = None,
                          labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建Role"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "role", name, namespace, resource,
+            rules=rules
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 created_role = self.rbac_v1_api.create_namespaced_role(
@@ -4117,13 +4664,24 @@ class KubernetesAPIService:
                 "namespace": created_role.metadata.namespace,
                 "message": f"Role {name} 创建成功"
             }
-        except ApiException as e:
-            raise Exception(f"创建Role失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "role", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_role(self, name: str, namespace: str = "default", rules: list = None,
                          labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新Role"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "role", name, namespace, resource,
+            rules=rules
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -4174,20 +4732,28 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                 "message": f"Role {name} 更新成功"
             }
-        except ApiException as e:
-            raise Exception(f"更新Role失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "role", name, namespace, resource_data, update_operation
+        )
 
     async def delete_role(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除Role"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             self.rbac_v1_api.delete_namespaced_role(name=name, namespace=namespace)
             
             return {
                 "success": True,
                 "message": f"Role {name} 删除成功"
             }
-        except ApiException as e:
-            raise Exception(f"删除Role失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "role", name, namespace, None, delete_operation
+        )
 
     async def list_cluster_roles(self, label_selector: str = None) -> List[Dict[str, Any]]:
         """列出ClusterRole"""
@@ -4254,7 +4820,16 @@ class KubernetesAPIService:
     async def create_cluster_role(self, name: str = None, rules: list = None,
                                 labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建ClusterRole"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "clusterrole", name, None, resource,  # ClusterRole 没有 namespace
+            rules=rules
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 created_role = self.rbac_v1_api.create_cluster_role(body=resource)
@@ -4297,13 +4872,24 @@ class KubernetesAPIService:
                 "name": created_role.metadata.name,
                 "message": f"ClusterRole {name} 创建成功"
             }
-        except ApiException as e:
-            raise Exception(f"创建ClusterRole失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法 (ClusterRole 是集群级资源，没有 namespace)
+        return await self._execute_with_validation_and_preview(
+            "create", "clusterrole", resource_name, None, resource_data, create_operation
+        )
 
     async def update_cluster_role(self, name: str, rules: list = None,
                                 labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新ClusterRole"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "clusterrole", name, None, resource,  # ClusterRole 没有 namespace
+            rules=rules
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -4343,27 +4929,35 @@ class KubernetesAPIService:
                 response = self.rbac_v1_api.replace_cluster_role(
                     name=name,
                     body=existing_role
-            )
+                )
             
             return {
                 "success": True,
                 "name": response.metadata.name,
                 "message": f"ClusterRole {name} 更新成功"
             }
-        except ApiException as e:
-            raise Exception(f"更新ClusterRole失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "clusterrole", name, None, resource_data, update_operation
+        )
 
     async def delete_cluster_role(self, name: str) -> Dict[str, Any]:
         """删除ClusterRole"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             self.rbac_v1_api.delete_cluster_role(name=name)
             
             return {
                 "success": True,
                 "message": f"ClusterRole {name} 删除成功"
             }
-        except ApiException as e:
-            raise Exception(f"删除ClusterRole失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "clusterrole", name, None, None, delete_operation
+        )
 
     async def list_role_bindings(self, namespace: str = "default", label_selector: str = None) -> List[Dict[str, Any]]:
         """列出RoleBinding"""
@@ -4448,7 +5042,16 @@ class KubernetesAPIService:
                                 role_ref: dict = None, subjects: list = None,
                                 labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建RoleBinding"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "rolebinding", name, namespace, resource,
+            role_ref=role_ref, subjects=subjects
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 created_rb = self.rbac_v1_api.create_namespaced_role_binding(
@@ -4510,14 +5113,25 @@ class KubernetesAPIService:
                 "namespace": created_rb.metadata.namespace,
                 "message": f"RoleBinding {name} 创建成功"
             }
-        except ApiException as e:
-            raise Exception(f"创建RoleBinding失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "create", "rolebinding", resource_name, namespace, resource_data, create_operation
+        )
 
     async def update_role_binding(self, name: str, namespace: str = "default",
                                 role_ref: dict = None, subjects: list = None,
                                 labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新RoleBinding"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "rolebinding", name, namespace, resource,
+            role_ref=role_ref, subjects=subjects
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -4569,7 +5183,7 @@ class KubernetesAPIService:
                     name=name,
                     namespace=namespace,
                     body=existing_rb
-            )
+                )
             
             return {
                 "success": True,
@@ -4577,20 +5191,28 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                 "message": f"RoleBinding {name} 更新成功"
             }
-        except ApiException as e:
-            raise Exception(f"更新RoleBinding失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "rolebinding", name, namespace, resource_data, update_operation
+        )
 
     async def delete_role_binding(self, name: str, namespace: str = "default") -> Dict[str, Any]:
         """删除RoleBinding"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             self.rbac_v1_api.delete_namespaced_role_binding(name=name, namespace=namespace)
             
             return {
                 "success": True,
                 "message": f"RoleBinding {name} 删除成功"
             }
-        except ApiException as e:
-            raise Exception(f"删除RoleBinding失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "rolebinding", name, namespace, None, delete_operation
+        )
 
     async def list_cluster_role_bindings(self, label_selector: str = None) -> List[Dict[str, Any]]:
         """列出ClusterRoleBinding"""
@@ -4667,7 +5289,16 @@ class KubernetesAPIService:
                                         subjects: list = None,
                                         labels: dict = None, annotations: dict = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
         """创建ClusterRoleBinding"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_name = resource.get("metadata", {}).get("name") if resource else name
+        resource_data = self._build_resource_data_for_validation(
+            "clusterrolebinding", name, None, resource,  # ClusterRoleBinding 没有 namespace
+            role_ref=role_ref, subjects=subjects
+        )
+        
+        # 定义实际的创建操作
+        async def create_operation():
             # 批量操作模式，传入完整的资源定义
             if resource:
                 created_crb = self.rbac_v1_api.create_cluster_role_binding(body=resource)
@@ -4720,14 +5351,25 @@ class KubernetesAPIService:
                 "name": created_crb.metadata.name,
                 "message": f"ClusterRoleBinding {name} 创建成功"
             }
-        except ApiException as e:
-            raise Exception(f"创建ClusterRoleBinding失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法 (ClusterRoleBinding 是集群级资源，没有 namespace)
+        return await self._execute_with_validation_and_preview(
+            "create", "clusterrolebinding", resource_name, None, resource_data, create_operation
+        )
 
     async def update_cluster_role_binding(self, name: str, role_ref: dict = None,
                                         subjects: list = None,
                                         labels: dict = None, annotations: dict = None, resource: Dict = None) -> Dict[str, Any]:
         """更新ClusterRoleBinding"""
-        try:
+        
+        # 准备资源数据用于验证
+        resource_data = self._build_resource_data_for_validation(
+            "clusterrolebinding", name, None, resource,  # ClusterRoleBinding 没有 namespace
+            role_ref=role_ref, subjects=subjects
+        )
+        
+        # 定义实际的更新操作
+        async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
                 body = resource
@@ -4776,27 +5418,35 @@ class KubernetesAPIService:
                 response = self.rbac_v1_api.replace_cluster_role_binding(
                     name=name,
                     body=existing_crb
-            )
+                )
             
             return {
                 "success": True,
                 "name": response.metadata.name,
                 "message": f"ClusterRoleBinding {name} 更新成功"
             }
-        except ApiException as e:
-            raise Exception(f"更新ClusterRoleBinding失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "update", "clusterrolebinding", name, None, resource_data, update_operation
+        )
 
     async def delete_cluster_role_binding(self, name: str) -> Dict[str, Any]:
         """删除ClusterRoleBinding"""
-        try:
+        
+        # 定义实际的删除操作
+        async def delete_operation():
             self.rbac_v1_api.delete_cluster_role_binding(name=name)
             
             return {
                 "success": True,
                 "message": f"ClusterRoleBinding {name} 删除成功"
             }
-        except ApiException as e:
-            raise Exception(f"删除ClusterRoleBinding失败: {e.reason}")
+            
+        # 使用统一的验证和执行方法
+        return await self._execute_with_validation_and_preview(
+            "delete", "clusterrolebinding", name, None, None, delete_operation
+        )
 
     # ========================== Node 服务层方法 ==========================
 
