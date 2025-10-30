@@ -6,10 +6,11 @@ Kubernetes MCP Server 工具模块
 
 # 使用自定义的 FastMCP 类
 from utils.fastmcp_custom import FastMCP
-from config import MCP_MESSAGE_PATH, MCP_SSE_PATH
+from config import MCP_SERVER_CONFIG
 
 # 创建统一的MCP实例，所有工具模块共享
-mcp = FastMCP("k8s-mcp-server", message_path=MCP_MESSAGE_PATH, sse_path=MCP_SSE_PATH)
+# 使用配置文件中的统一配置
+mcp = FastMCP("k8s-mcp-server", **MCP_SERVER_CONFIG)
 
 # 创建可导入的app对象
 app = mcp.create_app()

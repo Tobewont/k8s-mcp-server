@@ -890,74 +890,9 @@ class KubernetesAdvancedService:
         
         return results
 
-    async def _batch_operation_generic(self, items: List, operation_type: str, namespace: str = "default", 
-                                     enable_validation: bool = True, **kwargs) -> Dict:
-        """通用的批量操作方法 - 集成验证功能"""
-        result = BatchOperationResult()
-        
-        for item in items:
-            try:
-                if operation_type in ["create", "update", "delete"]:
-                    # 资源操作
-                    resource_type = item.get("kind", "").lower()
-                    resource_name = item.get("metadata", {}).get("name", "unknown")
-                    
-                    if enable_validation:
-                        # 使用集成验证的操作方法
-                        validation_result = await self._perform_operation_with_validation(
-                            operation_type, resource_type, resource_name, namespace, item, **kwargs
-                        )
-                        
-                        result.add_success({
-                    "name": resource_name,
-                    "kind": resource_type,
-                            "validation": validation_result.get("validation"),
-                            "preview": validation_result.get("preview"),
-                            "result": validation_result.get("result")
-                        })
-                    else:
-                        # 原有的直接操作方法
-                        operation_func = self._get_resource_operation(resource_type, operation_type, namespace)
-                        
-                        if operation_type == "create":
-                            op_result = await operation_func(item)
-                        elif operation_type == "update":
-                            op_result = await operation_func(resource_name, item)
-                        elif operation_type == "delete":
-                            grace_period = kwargs.get("grace_period_seconds")
-                            op_result = await operation_func(resource_name, grace_period)
-                        
-                        result.add_success({
-                    "name": resource_name,
-                    "kind": resource_type,
-                            "result": op_result
-                        })
-                    
-                elif operation_type == "list":
-                    # 列表操作
-                    resource_type = item.lower()
-                    operation_func = self._get_resource_operation(resource_type, "list", namespace)
-                    op_result = await operation_func()
-                    
-                    result.add_success({
-                        "resource_type": resource_type,
-                        "count": len(op_result) if isinstance(op_result, list) else 0,
-                        "items": op_result
-                    })
-                
-            except Exception as e:
-                if operation_type == "list":
-                    result.add_failure({"resource_type": item}, e)
-                else:
-                    result.add_failure({
-                        "name": item.get("metadata", {}).get("name", "unknown"),
-                        "kind": item.get("kind", "unknown")
-                    }, e)
-        
-        return result.to_dict()
+    # 注意：通用批量操作方法已删除，现在使用专门的批量方法
 
-    async def batch_create_resources(self, resources: List[Dict], namespace: str = "default", 
-                                   enable_validation: bool = True) -> Dict:
+    async def batch_create_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
         """批量创建k8s资源 - 自动集成验证和预览功能"""
         print(f"\n🚀 开始批量创建 {len(resources)} 个资源...")
         
@@ -968,25 +903,14 @@ class KubernetesAdvancedService:
             resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
             try:
-                if enable_validation:
-                    # 使用自动验证的操作方法
-                    validation_result = await self._execute_with_validation(
-                        "create", resource_type, resource_name, namespace, resource
-                    )
-                    results["success"].append({
-                        "name": resource_name,
-                        "kind": resource_type,
-                        "validation_info": validation_result
-                    })
-                else:
-                    # 直接创建，不验证
-                    operation_func = self._get_resource_operation(resource_type, "create", namespace)
-                    result = await operation_func(resource)
-                    results["success"].append({
-                        "name": resource_name,
-                        "kind": resource_type,
-                        "result": result
-                    })
+                # 直接调用k8s_api_service的方法，验证功能已集成在其中
+                operation_func = self._get_resource_operation(resource_type, "create", namespace)
+                result = await operation_func(resource)
+                results["success"].append({
+                    "name": resource_name,
+                    "kind": resource_type,
+                    "result": result
+                })
             except Exception as e:
                 results["failed"].append({
                     "name": resource_name,
@@ -997,8 +921,7 @@ class KubernetesAdvancedService:
         print(f"✅ 批量创建完成: {len(results['success'])} 成功, {len(results['failed'])} 失败\n")
         return results
     
-    async def batch_update_resources(self, resources: List[Dict], namespace: str = "default", 
-                                   enable_validation: bool = True) -> Dict:
+    async def batch_update_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
         """批量更新资源 - 自动集成验证和预览功能"""
         print(f"\n🔄 开始批量更新 {len(resources)} 个资源...")
         
@@ -1009,25 +932,14 @@ class KubernetesAdvancedService:
             resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
             try:
-                if enable_validation:
-                    # 使用自动验证的操作方法
-                    validation_result = await self._execute_with_validation(
-                        "update", resource_type, resource_name, namespace, resource
-                    )
-                    results["success"].append({
-                        "name": resource_name,
-                        "kind": resource_type,
-                        "validation_info": validation_result
-                    })
-                else:
-                    # 直接更新，不验证
-                    operation_func = self._get_resource_operation(resource_type, "update", namespace)
-                    result = await operation_func(resource_name, resource)
-                    results["success"].append({
-                        "name": resource_name,
-                        "kind": resource_type,
-                        "result": result
-                    })
+                # 直接调用k8s_api_service的方法，验证功能已集成在其中
+                operation_func = self._get_resource_operation(resource_type, "update", namespace)
+                result = await operation_func(resource_name, resource)
+                results["success"].append({
+                    "name": resource_name,
+                    "kind": resource_type,
+                    "result": result
+                })
             except Exception as e:
                 results["failed"].append({
                     "name": resource_name,
@@ -1039,7 +951,7 @@ class KubernetesAdvancedService:
         return results
     
     async def batch_delete_resources(self, resources: List[Dict], namespace: str = "default", 
-                                   grace_period_seconds: Optional[int] = None, enable_validation: bool = True) -> Dict:
+                                   grace_period_seconds: Optional[int] = None) -> Dict:
         """批量删除资源 - 自动集成验证和预览功能"""
         print(f"\n🗑️  开始批量删除 {len(resources)} 个资源...")
         
@@ -1050,26 +962,14 @@ class KubernetesAdvancedService:
             resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
             try:
-                if enable_validation:
-                    # 使用自动验证的操作方法
-                    validation_result = await self._execute_with_validation(
-                        "delete", resource_type, resource_name, namespace, 
-                        grace_period_seconds=grace_period_seconds
-                    )
-                    results["success"].append({
-                        "name": resource_name,
-                        "kind": resource_type,
-                        "validation_info": validation_result
-                    })
-                else:
-                    # 直接删除，不验证
-                    operation_func = self._get_resource_operation(resource_type, "delete", namespace)
-                    result = await operation_func(resource_name, grace_period_seconds)
-                    results["success"].append({
-                        "name": resource_name,
-                        "kind": resource_type,
-                        "result": result
-                    })
+                # 直接调用k8s_api_service的方法，验证功能已集成在其中
+                operation_func = self._get_resource_operation(resource_type, "delete", namespace)
+                result = await operation_func(resource_name, grace_period_seconds)
+                results["success"].append({
+                    "name": resource_name,
+                    "kind": resource_type,
+                    "result": result
+                })
             except Exception as e:
                 results["failed"].append({
                     "name": resource_name,
@@ -2567,74 +2467,5 @@ class KubernetesAdvancedService:
             return result
     
     # ==================== 自动验证和预览的写操作方法 ====================
-    
-    async def _execute_with_validation(self, operation_type: str, resource_type: str, 
-                                     resource_name: str, namespace: str = "default", 
-                                     resource_data: Dict = None, **kwargs) -> Dict:
-        """执行操作并自动显示验证和预览信息"""
-        
-        print(f"\n🔍 {operation_type.upper()} {resource_type}/{resource_name}")
-        
-        operation_result = {
-            "operation": operation_type,
-            "resource": f"{resource_type}/{resource_name}",
-            "namespace": namespace,
-            "result": None
-        }
-        
-        try:
-            # 1. 预操作验证和预览
-            if operation_type in ["update", "delete"]:
-                validation_result = await self.validate_and_preview_operation(
-                    resource_type, resource_name, operation_type, namespace, resource_data
-                )
-                
-                if not validation_result["valid"]:
-                    print(validation_result["message"])
-                    operation_result["result"] = {"error": validation_result["message"]}
-                    return operation_result
-                
-                # 显示验证结果
-                print(validation_result["message"])
-                
-                # 显示变化预览
-                if validation_result["changes"]:
-                    print("📋 预览变化:")
-                    for change in validation_result["changes"]:
-                        print(change)
-                    print()  # 空行分隔
-                
-                # 显示警告
-                for warning in validation_result["warnings"]:
-                    print(warning)
-            
-            elif operation_type == "create":
-                # 创建操作只需要基本验证
-                validation_result = await self.validate_and_preview_operation(
-                    resource_type, resource_name, operation_type, namespace
-                )
-                print(validation_result["message"])
-            
-            # 2. 执行实际操作
-            print(f"🚀 执行操作...")
-            
-            operation_func = self._get_resource_operation(resource_type, operation_type, namespace)
-            
-            if operation_type == "create":
-                result = await operation_func(resource_data)
-            elif operation_type == "update":
-                result = await operation_func(resource_name, resource_data)
-            elif operation_type == "delete":
-                grace_period = kwargs.get("grace_period_seconds")
-                result = await operation_func(resource_name, grace_period)
-            
-            print(f"✅ 操作成功完成\n")
-            operation_result["result"] = result
-            
-            return operation_result
-            
-        except Exception as e:
-            print(f"❌ 操作失败: {str(e)}\n")
-            operation_result["result"] = {"error": str(e)}
-            return operation_result
+    # 注意：验证功能现在直接集成在 k8s_api_service 的方法中，不再需要这个包装方法
 
