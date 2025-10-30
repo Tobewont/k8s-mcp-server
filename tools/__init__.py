@@ -16,20 +16,18 @@ mcp = FastMCP("k8s-mcp-server", **MCP_SERVER_CONFIG)
 app = mcp.create_app()
 
 # 在创建mcp实例后导入所有工具模块
-from . import k8s_tools
-from . import cluster_tools
-from . import config_tools
-from . import diagnostic_tools
-from . import batch_tools
-from . import backup_tools
-from . import rbac_tools
+from . import k8s_tools          # 核心工具（健康检查、查询、快捷操作）
+from . import batch_tools        # 批量资源管理（核心）
+from . import cluster_tools      # 集群和配置管理
+from . import diagnostic_tools   # 诊断工具
+from . import backup_tools       # 备份工具
+from . import rbac_tools         # RBAC 工具
 
 __all__ = [
     'k8s_tools',
-    'cluster_tools', 
-    'config_tools',
-    'diagnostic_tools',
     'batch_tools',
+    'cluster_tools', 
+    'diagnostic_tools',
     'backup_tools',
     'rbac_tools',
     'mcp',

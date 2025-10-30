@@ -12,118 +12,51 @@ from services.k8s_advanced_service import KubernetesAdvancedService
 from . import mcp
 
 @mcp.tool()
-async def create_developer_role_template(namespace: str, role_name: str = "developer") -> str:
-    """创建开发者角色模板
+async def create_role_template(template_type: str, namespace: str, role_name: str = None) -> str:
+    """创建角色模板（统一工具）
     
     Args:
+        template_type: 角色模板类型，支持：developer, admin, operator, readonly, deployer, monitor, debug
         namespace: 命名空间
-        role_name: 角色名称
+        role_name: 角色名称，默认使用模板类型作为名称
+    
+    Returns:
+        角色创建结果
     """
     try:
-        service = KubernetesAdvancedService()
-        result = await service.create_role_template("developer", namespace, role_name)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        # 支持的模板类型
+        supported_templates = {
+            "developer": "开发者角色模板",
+            "admin": "管理员角色模板", 
+            "operator": "运维角色模板",
+            "readonly": "只读角色模板",
+            "deployer": "部署者角色模板（可以部署和管理应用，但不能修改RBAC）",
+            "monitor": "监控角色模板（可以查看所有资源状态和指标）",
+            "debug": "调试角色模板（可以执行Pod内命令和查看日志）"
+        }
         
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-async def create_admin_role_template(namespace: str, role_name: str = "admin") -> str:
-    """创建管理员角色模板
-    
-    Args:
-        namespace: 命名空间
-        role_name: 角色名称
-    """
-    try:
-        service = KubernetesAdvancedService()
-        result = await service.create_role_template("admin", namespace, role_name)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if template_type not in supported_templates:
+            return json.dumps({
+                "success": False, 
+                "error": f"不支持的模板类型: {template_type}。支持的类型: {', '.join(supported_templates.keys())}"
+            }, ensure_ascii=False, indent=2)
         
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-async def create_operator_role_template(namespace: str, role_name: str = "operator") -> str:
-    """创建运维角色模板
-    
-    Args:
-        namespace: 命名空间
-        role_name: 角色名称
-    """
-    try:
+        # 如果没有指定角色名称，使用模板类型作为默认名称
+        if role_name is None:
+            role_name = template_type
+            
         service = KubernetesAdvancedService()
-        result = await service.create_role_template("operator", namespace, role_name)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        result = await service.create_role_template(template_type, namespace, role_name)
         
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-async def create_readonly_role_template(namespace: str, role_name: str = "readonly") -> str:
-    """创建只读角色模板
-    
-    Args:
-        namespace: 命名空间
-        role_name: 角色名称
-    """
-    try:
-        service = KubernetesAdvancedService()
-        result = await service.create_role_template("readonly", namespace, role_name)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        # 添加模板描述信息
+        if result.get("success"):
+            result["template_info"] = {
+                "type": template_type,
+                "description": supported_templates[template_type],
+                "role_name": role_name,
+                "namespace": namespace
+            }
         
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-async def create_deployer_role_template(namespace: str, role_name: str = "deployer") -> str:
-    """创建部署者角色模板（可以部署和管理应用，但不能修改RBAC）
-    
-    Args:
-        namespace: 命名空间
-        role_name: 角色名称
-    """
-    try:
-        service = KubernetesAdvancedService()
-        result = await service.create_role_template("deployer", namespace, role_name)
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-async def create_monitor_role_template(namespace: str, role_name: str = "monitor") -> str:
-    """创建监控角色模板（可以查看所有资源状态和指标）
-    
-    Args:
-        namespace: 命名空间
-        role_name: 角色名称
-    """
-    try:
-        service = KubernetesAdvancedService()
-        result = await service.create_role_template("monitor", namespace, role_name)
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
-
-
-@mcp.tool()
-async def create_debug_role_template(namespace: str, role_name: str = "debug") -> str:
-    """创建调试角色模板（可以执行Pod内命令和查看日志）
-    
-    Args:
-        namespace: 命名空间
-        role_name: 角色名称
-    """
-    try:
-        service = KubernetesAdvancedService()
-        result = await service.create_role_template("debug", namespace, role_name)
         return json.dumps(result, ensure_ascii=False, indent=2)
         
     except Exception as e:

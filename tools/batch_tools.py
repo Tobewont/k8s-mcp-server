@@ -187,3 +187,43 @@ async def batch_delete_resources(resources: Union[str, List[Dict]], namespace: s
         
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def batch_describe_resources(resource_specs: Union[str, List[Dict]], namespace: str = "default") -> str:
+    """批量获取资源详细信息
+    
+    Args:
+        resource_specs: 资源规格列表，格式：[{"kind": "Pod", "name": "my-pod"}, {"kind": "Service", "name": "my-svc"}]
+        namespace: 命名空间
+    
+    Returns:
+        批量资源详细信息
+    """
+    try:
+        # 解析资源规格
+        if isinstance(resource_specs, str):
+            try:
+                specs_list = json.loads(resource_specs)
+            except json.JSONDecodeError:
+                return json.dumps({"success": False, "error": "资源规格必须是有效的JSON字符串"}, ensure_ascii=False, indent=2)
+        else:
+            specs_list = resource_specs
+        
+        if not isinstance(specs_list, list):
+            specs_list = [specs_list]
+        
+        # 验证资源规格格式
+        for spec in specs_list:
+            if not isinstance(spec, dict):
+                return json.dumps({"success": False, "error": "每个资源规格必须是字典"}, ensure_ascii=False, indent=2)
+            if "kind" not in spec or "name" not in spec:
+                return json.dumps({"success": False, "error": "每个资源规格必须包含kind和name字段"}, ensure_ascii=False, indent=2)
+        
+        service = KubernetesAdvancedService()
+        result = await service.batch_describe_resources(specs_list, namespace)
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
