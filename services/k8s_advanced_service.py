@@ -38,7 +38,10 @@ class ResourceManager:
             "serviceaccounts": ResourceConfig("ServiceAccount", "list_serviceaccounts", "get_serviceaccount",
                                             skip_condition=lambda name: name == "default"),
             "roles": ResourceConfig("Role", "list_roles", "get_role"),
-            "rolebindings": ResourceConfig("RoleBinding", "list_role_bindings", "get_role_binding")
+            "rolebindings": ResourceConfig("RoleBinding", "list_role_bindings", "get_role_binding"),
+            "horizontalpodautoscalers": ResourceConfig("HorizontalPodAutoscaler", "list_hpas", "get_hpa"),
+            "networkpolicies": ResourceConfig("NetworkPolicy", "list_network_policies", "get_network_policy"),
+            "resourcequotas": ResourceConfig("ResourceQuota", "list_resource_quotas", "get_resource_quota")
         }
     
     def get_resource_config(self, resource_type: str):
@@ -126,6 +129,9 @@ class KubernetesAdvancedService:
             "ServiceAccount": "v1",
             "Role": "rbac.authorization.k8s.io/v1",
             "RoleBinding": "rbac.authorization.k8s.io/v1",
+            "HorizontalPodAutoscaler": "autoscaling/v2",
+            "NetworkPolicy": "networking.k8s.io/v1",
+            "ResourceQuota": "v1",
         }
 
     # ==================== 规格归一化（备份/恢复通用） ====================
@@ -760,95 +766,155 @@ class KubernetesAdvancedService:
         """获取资源操作方法的统一接口"""
         resource_type = resource_type.lower()
         
+        # 资源类型规范化映射 - 将简写转换为标准名称
+        resource_type_normalization = {
+            "hpa": "horizontalpodautoscalers",
+            "pvc": "persistentvolumeclaims",
+            "pv": "persistentvolumes",
+            "sc": "storageclasses",
+            "sa": "serviceaccounts",
+            "cm": "configmaps",
+            "svc": "services",
+            "deploy": "deployments",
+            "sts": "statefulsets",
+            "ds": "daemonsets",
+            "rs": "replicasets",
+            "rc": "replicationcontrollers",
+            "ep": "endpoints",
+            "ev": "events",
+            "ns": "namespaces",
+            "no": "nodes",
+            "po": "pods",
+            # 单数形式也映射到复数形式
+            "deployment": "deployments",
+            "statefulset": "statefulsets",
+            "daemonset": "daemonsets",
+            "service": "services",
+            "configmap": "configmaps",
+            "secret": "secrets",
+            "job": "jobs",
+            "cronjob": "cronjobs",
+            "ingress": "ingresses",
+            "storageclass": "storageclasses",
+            "persistentvolume": "persistentvolumes",
+            "persistentvolumeclaim": "persistentvolumeclaims",
+            "role": "roles",
+            "clusterrole": "clusterroles",
+            "rolebinding": "rolebindings",
+            "clusterrolebinding": "clusterrolebindings",
+            "serviceaccount": "serviceaccounts",
+            "namespace": "namespaces",
+            "pod": "pods",
+            "node": "nodes",
+            "horizontalpodautoscaler": "horizontalpodautoscalers",
+            "networkpolicy": "networkpolicies",
+            "resourcequota": "resourcequotas"
+        }
+        
+        # 规范化资源类型
+        resource_type = resource_type_normalization.get(resource_type, resource_type)
+        
         # 列表操作映射
         list_operations = {
-            "deployment": lambda: self.k8s_service.list_deployments(namespace=namespace),
-            "statefulset": lambda: self.k8s_service.list_statefulsets(namespace=namespace),
-            "daemonset": lambda: self.k8s_service.list_daemonsets(namespace=namespace),
-            "service": lambda: self.k8s_service.list_services(namespace=namespace),
-            "configmap": lambda: self.k8s_service.list_configmaps(namespace=namespace),
-            "secret": lambda: self.k8s_service.list_secrets(namespace=namespace),
-            "job": lambda: self.k8s_service.list_jobs(namespace=namespace),
-            "cronjob": lambda: self.k8s_service.list_cronjobs(namespace=namespace),
-            "ingress": lambda: self.k8s_service.list_ingresses(namespace=namespace),
-            "storageclass": lambda: self.k8s_service.list_storageclasses(),
-            "persistentvolume": lambda: self.k8s_service.list_persistentvolumes(),
-            "persistentvolumeclaim": lambda: self.k8s_service.list_persistentvolumeclaims(namespace=namespace),
-            "role": lambda: self.k8s_service.list_roles(namespace=namespace),
-            "clusterrole": lambda: self.k8s_service.list_cluster_roles(),
-            "rolebinding": lambda: self.k8s_service.list_role_bindings(namespace=namespace),
-            "clusterrolebinding": lambda: self.k8s_service.list_cluster_role_bindings(),
-            "serviceaccount": lambda: self.k8s_service.list_serviceaccounts(namespace=namespace),
-            "namespace": lambda: self.k8s_service.list_namespaces(),
-            "pod": lambda: self.k8s_service.list_pods(namespace=namespace),
-            "node": lambda: self.k8s_service.list_nodes(),
+            "deployments": lambda: self.k8s_service.list_deployments(namespace=namespace),
+            "statefulsets": lambda: self.k8s_service.list_statefulsets(namespace=namespace),
+            "daemonsets": lambda: self.k8s_service.list_daemonsets(namespace=namespace),
+            "services": lambda: self.k8s_service.list_services(namespace=namespace),
+            "configmaps": lambda: self.k8s_service.list_configmaps(namespace=namespace),
+            "secrets": lambda: self.k8s_service.list_secrets(namespace=namespace),
+            "jobs": lambda: self.k8s_service.list_jobs(namespace=namespace),
+            "cronjobs": lambda: self.k8s_service.list_cronjobs(namespace=namespace),
+            "ingresses": lambda: self.k8s_service.list_ingresses(namespace=namespace),
+            "storageclasses": lambda: self.k8s_service.list_storageclasses(),
+            "persistentvolumes": lambda: self.k8s_service.list_persistentvolumes(),
+            "persistentvolumeclaims": lambda: self.k8s_service.list_persistentvolumeclaims(namespace=namespace),
+            "roles": lambda: self.k8s_service.list_roles(namespace=namespace),
+            "clusterroles": lambda: self.k8s_service.list_cluster_roles(),
+            "rolebindings": lambda: self.k8s_service.list_role_bindings(namespace=namespace),
+            "clusterrolebindings": lambda: self.k8s_service.list_cluster_role_bindings(),
+            "serviceaccounts": lambda: self.k8s_service.list_serviceaccounts(namespace=namespace),
+            "namespaces": lambda: self.k8s_service.list_namespaces(),
+            "pods": lambda: self.k8s_service.list_pods(namespace=namespace),
+            "nodes": lambda: self.k8s_service.list_nodes(),
+            "horizontalpodautoscalers": lambda: self.k8s_service.list_hpas(namespace=namespace),
+            "networkpolicies": lambda: self.k8s_service.list_network_policies(namespace=namespace),
+            "resourcequotas": lambda: self.k8s_service.list_resource_quotas(namespace=namespace),
         }
         
         # 创建操作映射
         create_operations = {
-            "deployment": lambda resource: self.k8s_service.create_deployment(resource=resource, namespace=namespace),
-            "statefulset": lambda resource: self.k8s_service.create_statefulset(resource=resource, namespace=namespace),
-            "daemonset": lambda resource: self.k8s_service.create_daemonset(resource=resource, namespace=namespace),
-            "service": lambda resource: self.k8s_service.create_service(resource=resource, namespace=namespace),
-            "configmap": lambda resource: self.k8s_service.create_configmap(resource=resource, namespace=namespace),
-            "secret": lambda resource: self.k8s_service.create_secret(resource=resource, namespace=namespace),
-            "job": lambda resource: self.k8s_service.create_job(resource=resource, namespace=namespace),
-            "cronjob": lambda resource: self.k8s_service.create_cronjob(resource=resource, namespace=namespace),
-            "ingress": lambda resource: self.k8s_service.create_ingress(resource=resource, namespace=namespace),
-            "storageclass": lambda resource: self.k8s_service.create_storageclass(resource=resource),
-            "persistentvolume": lambda resource: self.k8s_service.create_persistentvolume(resource=resource),
-            "persistentvolumeclaim": lambda resource: self.k8s_service.create_persistentvolumeclaim(resource=resource, namespace=namespace),
-            "role": lambda resource: self.k8s_service.create_role(resource=resource, namespace=namespace),
-            "clusterrole": lambda resource: self.k8s_service.create_cluster_role(resource=resource),
-            "rolebinding": lambda resource: self.k8s_service.create_role_binding(resource=resource, namespace=namespace),
-            "clusterrolebinding": lambda resource: self.k8s_service.create_cluster_role_binding(resource=resource),
-            "serviceaccount": lambda resource: self.k8s_service.create_serviceaccount(resource=resource, namespace=namespace),
-            "namespace": lambda resource: self.k8s_service.create_namespace(resource=resource),
+            "deployments": lambda resource: self.k8s_service.create_deployment(resource=resource, namespace=namespace),
+            "statefulsets": lambda resource: self.k8s_service.create_statefulset(resource=resource, namespace=namespace),
+            "daemonsets": lambda resource: self.k8s_service.create_daemonset(resource=resource, namespace=namespace),
+            "services": lambda resource: self.k8s_service.create_service(resource=resource, namespace=namespace),
+            "configmaps": lambda resource: self.k8s_service.create_configmap(resource=resource, namespace=namespace),
+            "secrets": lambda resource: self.k8s_service.create_secret(resource=resource, namespace=namespace),
+            "jobs": lambda resource: self.k8s_service.create_job(resource=resource, namespace=namespace),
+            "cronjobs": lambda resource: self.k8s_service.create_cronjob(resource=resource, namespace=namespace),
+            "ingresses": lambda resource: self.k8s_service.create_ingress(resource=resource, namespace=namespace),
+            "storageclasses": lambda resource: self.k8s_service.create_storageclass(resource=resource),
+            "persistentvolumes": lambda resource: self.k8s_service.create_persistentvolume(resource=resource),
+            "persistentvolumeclaims": lambda resource: self.k8s_service.create_persistentvolumeclaim(resource=resource, namespace=namespace),
+            "roles": lambda resource: self.k8s_service.create_role(resource=resource, namespace=namespace),
+            "clusterroles": lambda resource: self.k8s_service.create_cluster_role(resource=resource),
+            "rolebindings": lambda resource: self.k8s_service.create_role_binding(resource=resource, namespace=namespace),
+            "clusterrolebindings": lambda resource: self.k8s_service.create_cluster_role_binding(resource=resource),
+            "serviceaccounts": lambda resource: self.k8s_service.create_serviceaccount(resource=resource, namespace=namespace),
+            "namespaces": lambda resource: self.k8s_service.create_namespace(resource=resource),
+            "horizontalpodautoscalers": lambda resource: self.k8s_service.create_hpa(resource=resource, namespace=namespace),
+            "networkpolicies": lambda resource: self.k8s_service.create_network_policy(resource=resource, namespace=namespace),
+            "resourcequotas": lambda resource: self.k8s_service.create_resource_quota(resource=resource, namespace=namespace),
         }
         
         # 更新操作映射
         update_operations = {
-            "deployment": lambda name, resource: self.k8s_service.update_deployment(name=name, namespace=namespace, resource=resource),
-            "statefulset": lambda name, resource: self.k8s_service.update_statefulset(name=name, namespace=namespace, resource=resource),
-            "daemonset": lambda name, resource: self.k8s_service.update_daemonset(name=name, namespace=namespace, resource=resource),
-            "service": lambda name, resource: self.k8s_service.update_service(name=name, namespace=namespace, resource=resource),
-            "configmap": lambda name, resource: self.k8s_service.update_configmap(name=name, namespace=namespace, resource=resource),
-            "secret": lambda name, resource: self.k8s_service.update_secret(name=name, namespace=namespace, resource=resource),
-            "job": lambda name, resource: self.k8s_service.update_job(name=name, namespace=namespace, resource=resource),
-            "cronjob": lambda name, resource: self.k8s_service.update_cronjob(name=name, namespace=namespace, resource=resource),
-            "ingress": lambda name, resource: self.k8s_service.update_ingress(name=name, namespace=namespace, resource=resource),
-            "storageclass": lambda name, resource: self.k8s_service.update_storageclass(name=name, resource=resource),
-            "persistentvolume": lambda name, resource: self.k8s_service.update_persistentvolume(name=name, resource=resource),
-            "persistentvolumeclaim": lambda name, resource: self.k8s_service.update_persistentvolumeclaim(name=name, namespace=namespace, resource=resource),
-            "role": lambda name, resource: self.k8s_service.update_role(name=name, namespace=namespace, resource=resource),
-            "clusterrole": lambda name, resource: self.k8s_service.update_cluster_role(name=name, resource=resource),
-            "rolebinding": lambda name, resource: self.k8s_service.update_role_binding(name=name, namespace=namespace, resource=resource),
-            "clusterrolebinding": lambda name, resource: self.k8s_service.update_cluster_role_binding(name=name, resource=resource),
-            "serviceaccount": lambda name, resource: self.k8s_service.update_serviceaccount(name=name, namespace=namespace, resource=resource),
-            "namespace": lambda name, resource: self.k8s_service.update_namespace(name=name, resource=resource),
+            "deployments": lambda name, resource: self.k8s_service.update_deployment(name=name, namespace=namespace, resource=resource),
+            "statefulsets": lambda name, resource: self.k8s_service.update_statefulset(name=name, namespace=namespace, resource=resource),
+            "daemonsets": lambda name, resource: self.k8s_service.update_daemonset(name=name, namespace=namespace, resource=resource),
+            "services": lambda name, resource: self.k8s_service.update_service(name=name, namespace=namespace, resource=resource),
+            "configmaps": lambda name, resource: self.k8s_service.update_configmap(name=name, namespace=namespace, resource=resource),
+            "secrets": lambda name, resource: self.k8s_service.update_secret(name=name, namespace=namespace, resource=resource),
+            "jobs": lambda name, resource: self.k8s_service.update_job(name=name, namespace=namespace, resource=resource),
+            "cronjobs": lambda name, resource: self.k8s_service.update_cronjob(name=name, namespace=namespace, resource=resource),
+            "ingresses": lambda name, resource: self.k8s_service.update_ingress(name=name, namespace=namespace, resource=resource),
+            "storageclasses": lambda name, resource: self.k8s_service.update_storageclass(name=name, resource=resource),
+            "persistentvolumes": lambda name, resource: self.k8s_service.update_persistentvolume(name=name, resource=resource),
+            "persistentvolumeclaims": lambda name, resource: self.k8s_service.update_persistentvolumeclaim(name=name, namespace=namespace, resource=resource),
+            "roles": lambda name, resource: self.k8s_service.update_role(name=name, namespace=namespace, resource=resource),
+            "clusterroles": lambda name, resource: self.k8s_service.update_cluster_role(name=name, resource=resource),
+            "rolebindings": lambda name, resource: self.k8s_service.update_role_binding(name=name, namespace=namespace, resource=resource),
+            "clusterrolebindings": lambda name, resource: self.k8s_service.update_cluster_role_binding(name=name, resource=resource),
+            "serviceaccounts": lambda name, resource: self.k8s_service.update_serviceaccount(name=name, namespace=namespace, resource=resource),
+            "namespaces": lambda name, resource: self.k8s_service.update_namespace(name=name, resource=resource),
+            "horizontalpodautoscalers": lambda name, resource: self.k8s_service.update_hpa(name=name, namespace=namespace, resource=resource),
+            "networkpolicies": lambda name, resource: self.k8s_service.update_network_policy(name=name, namespace=namespace, resource=resource),
+            "resourcequotas": lambda name, resource: self.k8s_service.update_resource_quota(name=name, namespace=namespace, resource=resource),
         }
         
         # 删除操作映射（带grace_period_seconds支持）
         delete_operations = {
-            "deployment": lambda name, grace: self.k8s_service.delete_deployment(name=name, namespace=namespace, grace_period_seconds=grace),
-            "statefulset": lambda name, grace: self.k8s_service.delete_statefulset(name=name, namespace=namespace, grace_period_seconds=grace),
-            "daemonset": lambda name, grace: self.k8s_service.delete_daemonset(name=name, namespace=namespace),
-            "service": lambda name, grace: self.k8s_service.delete_service(name=name, namespace=namespace),
-            "configmap": lambda name, grace: self.k8s_service.delete_configmap(name=name, namespace=namespace),
-            "secret": lambda name, grace: self.k8s_service.delete_secret(name=name, namespace=namespace),
-            "job": lambda name, grace: self.k8s_service.delete_job(name=name, namespace=namespace),
-            "cronjob": lambda name, grace: self.k8s_service.delete_cronjob(name=name, namespace=namespace),
-            "ingress": lambda name, grace: self.k8s_service.delete_ingress(name=name, namespace=namespace),
-            "storageclass": lambda name, grace: self.k8s_service.delete_storageclass(name=name),
-            "persistentvolume": lambda name, grace: self.k8s_service.delete_persistentvolume(name=name),
-            "persistentvolumeclaim": lambda name, grace: self.k8s_service.delete_persistentvolumeclaim(name=name, namespace=namespace),
-            "role": lambda name, grace: self.k8s_service.delete_role(name=name, namespace=namespace),
-            "clusterrole": lambda name, grace: self.k8s_service.delete_cluster_role(name=name),
-            "rolebinding": lambda name, grace: self.k8s_service.delete_role_binding(name=name, namespace=namespace),
-            "clusterrolebinding": lambda name, grace: self.k8s_service.delete_cluster_role_binding(name=name),
-            "serviceaccount": lambda name, grace: self.k8s_service.delete_serviceaccount(name=name, namespace=namespace, grace_period_seconds=grace),
-            "namespace": lambda name, grace: self.k8s_service.delete_namespace(name=name),
-            "pod": lambda name, grace: self.k8s_service.delete_pod(name=name, namespace=namespace, grace_period_seconds=grace),
+            "deployments": lambda name, grace: self.k8s_service.delete_deployment(name=name, namespace=namespace, grace_period_seconds=grace),
+            "statefulsets": lambda name, grace: self.k8s_service.delete_statefulset(name=name, namespace=namespace, grace_period_seconds=grace),
+            "daemonsets": lambda name, grace: self.k8s_service.delete_daemonset(name=name, namespace=namespace),
+            "services": lambda name, grace: self.k8s_service.delete_service(name=name, namespace=namespace),
+            "configmaps": lambda name, grace: self.k8s_service.delete_configmap(name=name, namespace=namespace),
+            "secrets": lambda name, grace: self.k8s_service.delete_secret(name=name, namespace=namespace),
+            "jobs": lambda name, grace: self.k8s_service.delete_job(name=name, namespace=namespace),
+            "cronjobs": lambda name, grace: self.k8s_service.delete_cronjob(name=name, namespace=namespace),
+            "ingresses": lambda name, grace: self.k8s_service.delete_ingress(name=name, namespace=namespace),
+            "storageclasses": lambda name, grace: self.k8s_service.delete_storageclass(name=name),
+            "persistentvolumes": lambda name, grace: self.k8s_service.delete_persistentvolume(name=name),
+            "persistentvolumeclaims": lambda name, grace: self.k8s_service.delete_persistentvolumeclaim(name=name, namespace=namespace),
+            "roles": lambda name, grace: self.k8s_service.delete_role(name=name, namespace=namespace),
+            "clusterroles": lambda name, grace: self.k8s_service.delete_cluster_role(name=name),
+            "rolebindings": lambda name, grace: self.k8s_service.delete_role_binding(name=name, namespace=namespace),
+            "clusterrolebindings": lambda name, grace: self.k8s_service.delete_cluster_role_binding(name=name),
+            "serviceaccounts": lambda name, grace: self.k8s_service.delete_serviceaccount(name=name, namespace=namespace, grace_period_seconds=grace),
+            "namespaces": lambda name, grace: self.k8s_service.delete_namespace(name=name),
+            "pods": lambda name, grace: self.k8s_service.delete_pod(name=name, namespace=namespace, grace_period_seconds=grace),
+            "horizontalpodautoscalers": lambda name, grace: self.k8s_service.delete_hpa(name=name, namespace=namespace),
+            "networkpolicies": lambda name, grace: self.k8s_service.delete_network_policy(name=name, namespace=namespace),
+            "resourcequotas": lambda name, grace: self.k8s_service.delete_resource_quota(name=name, namespace=namespace),
         }
         
         operations_map = {
@@ -889,6 +955,69 @@ class KubernetesAdvancedService:
                 })
         
         return results
+
+    async def batch_describe_resources(self, resource_specs: List[Dict], namespace: str = "default") -> Dict:
+        """批量获取资源详细信息"""
+        results = {"success": [], "failed": [], "total": len(resource_specs)}
+        
+        for spec in resource_specs:
+            try:
+                kind = spec["kind"]
+                name = spec["name"]
+                
+                # 将 kind 转换为资源类型
+                resource_type = self._kind_to_resource_type(kind)
+                
+                # 获取资源详细信息
+                operation_func = self._get_resource_operation(resource_type, "get", namespace)
+                result = await operation_func(name)
+                
+                results["success"].append({
+                    "kind": kind,
+                    "name": name,
+                    "namespace": namespace,
+                    "details": result
+                })
+                
+            except Exception as e:
+                results["failed"].append({
+                    "kind": spec.get("kind", "Unknown"),
+                    "name": spec.get("name", "Unknown"),
+                    "error": str(e)
+                })
+        
+        return results
+    
+    def _kind_to_resource_type(self, kind: str) -> str:
+        """将 Kind 转换为资源类型"""
+        kind_mapping = {
+            "Pod": "pods",
+            "Deployment": "deployments", 
+            "StatefulSet": "statefulsets",
+            "DaemonSet": "daemonsets",
+            "Service": "services",
+            "ConfigMap": "configmaps",
+            "Secret": "secrets",
+            "Job": "jobs",
+            "CronJob": "cronjobs",
+            "Ingress": "ingresses",
+            "PersistentVolumeClaim": "persistentvolumeclaims",
+            "ServiceAccount": "serviceaccounts",
+            "Role": "roles",
+            "RoleBinding": "rolebindings",
+            "Node": "nodes",
+            "Namespace": "namespaces",
+            "HorizontalPodAutoscaler": "horizontalpodautoscalers",
+            "HPA": "horizontalpodautoscalers",  # 简写也映射到标准名称
+            "NetworkPolicy": "networkpolicies",
+            "ResourceQuota": "resourcequotas"
+        }
+        
+        resource_type = kind_mapping.get(kind)
+        if not resource_type:
+            raise ValueError(f"不支持的资源类型: {kind}")
+        
+        return resource_type
 
     # 注意：通用批量操作方法已删除，现在使用专门的批量方法
 
@@ -1997,6 +2126,12 @@ class KubernetesAdvancedService:
                 return await self.k8s_service.get_pod(resource_name, namespace)
             elif resource_type == "node":
                 return await self.k8s_service.get_node(resource_name)
+            elif resource_type == "horizontalpodautoscaler":
+                return await self.k8s_service.get_hpa(resource_name, namespace)
+            elif resource_type == "networkpolicy":
+                return await self.k8s_service.get_network_policy(resource_name, namespace)
+            elif resource_type == "resourcequota":
+                return await self.k8s_service.get_resource_quota(resource_name, namespace)
             else:
                 raise ValueError(f"不支持的资源类型: {resource_type}")
         except Exception as e:

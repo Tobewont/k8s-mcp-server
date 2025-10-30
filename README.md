@@ -9,7 +9,7 @@
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
-- **全面的 K8s 操作**：支持 127+ 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **全面的 K8s 操作**：支持 41 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
 - **双重传输协议**：同时支持 SSE 和 Stdio 两种传输方式
@@ -79,13 +79,12 @@ k8s-mcp-server/
 │   └── k8s_advanced_service.py  # Kubernetes 进阶服务层（批量操作、备份恢复、RBAC、验证）
 ├── tools/
 │   ├── __init__.py              # FastMCP 实例和工具模块导入
-│   ├── k8s_tools.py             # 核心 K8s 资源管理工具
-│   ├── cluster_tools.py         # 多集群配置管理
-│   ├── config_tools.py          # kubeconfig 文件管理
-│   ├── diagnostic_tools.py      # 集群诊断工具
-│   ├── batch_tools.py           # 批量操作工具
-│   ├── backup_tools.py          # 备份恢复工具
-│   └── rbac_tools.py            # RBAC管理工具
+│   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (10个工具)
+│   ├── cluster_tools.py         # 多集群配置管理 (13个工具)
+│   ├── diagnostic_tools.py      # 集群诊断工具 (5个工具)
+│   ├── batch_tools.py           # 批量操作工具 (5个工具)
+│   ├── backup_tools.py          # 备份恢复工具 (4个工具)
+│   └── rbac_tools.py            # RBAC管理工具 (4个工具)
 ├── utils/
 │   ├── __init__.py
 │   ├── cluster_config.py        # 集群配置管理类
@@ -120,143 +119,30 @@ k8s-mcp-server/
 
 ## 🛠️ 主要功能
 
-### K8s 资源管理 (k8s_tools.py)
+### K8s 资源管理 (batch_tools.py)
 
-#### Pod 管理
-- `list_pods()` - 列出 Pod
-- `describe_pod()` - 获取 Pod 详情
-- `get_pod_logs()` - 获取 Pod 日志
-- `delete_pod()` - 删除 Pod（支持 `grace_period_seconds` 参数）
+#### 批量操作工具
+- `batch_list_resources()` - 批量查询资源
+- `batch_create_resources()` - 批量创建资源（支持事务回滚）
+- `batch_update_resources()` - 批量更新资源
+- `batch_delete_resources()` - 批量删除资源
+- `batch_describe_resources()` - 批量获取资源详细信息
 
-#### Deployment 管理
-- `list_deployments()` - 列出 Deployment
-- `describe_deployment()` - 获取 Deployment 详细信息
-- `create_deployment()` - 创建 Deployment
-- `update_deployment()` - 更新/扩缩容 Deployment
-- `delete_deployment()` - 删除 Deployment（支持 `grace_period_seconds` 参数）
+### 核心工具 (k8s_tools.py)
 
-#### StatefulSet 管理
-- `list_statefulsets()` - 列出 StatefulSet
-- `describe_statefulset()` - 获取 StatefulSet 详细信息
-- `create_statefulset()` - 创建 StatefulSet
-- `update_statefulset()` - 更新/扩缩容 StatefulSet
-- `delete_statefulset()` - 删除 StatefulSet（支持 `grace_period_seconds` 参数）
-
-#### DaemonSet 管理
-- `list_daemonsets()` - 列出 DaemonSet
-- `describe_daemonset()` - 获取 DaemonSet 详细信息
-- `create_daemonset()` - 创建 DaemonSet
-- `update_daemonset()` - 更新 DaemonSet
-- `delete_daemonset()` - 删除 DaemonSet
-
-#### Service 管理
-- `list_services()` - 列出 Service
-- `describe_service()` - 获取 Service 详细信息
-- `create_service()` - 创建 Service
-- `update_service()` - 更新 Service
-- `delete_service()` - 删除 Service
-
-#### ConfigMap 管理
-- `list_configmaps()` - 列出 ConfigMap
-- `describe_configmap()` - 获取 ConfigMap 详细信息
-- `create_configmap()` - 创建 ConfigMap
-- `update_configmap()` - 更新 ConfigMap
-- `delete_configmap()` - 删除 ConfigMap
-
-#### Secret 管理
-- `list_secrets()` - 列出 Secret
-- `get_secret()` - 获取 Secret 详细信息
-- `create_secret()` - 创建 Secret
-- `update_secret()` - 更新 Secret
-- `delete_secret()` - 删除 Secret
-
-#### Job 管理
-- `list_jobs()` - 列出 Job
-- `describe_job()` - 获取 Job 详细信息
-- `create_job()` - 创建 Job
-- `update_job()` - 更新 Job
-- `delete_job()` - 删除 Job
-
-#### CronJob 管理
-- `list_cronjobs()` - 列出 CronJob
-- `describe_cronjob()` - 获取 CronJob 详细信息
-- `create_cronjob()` - 创建 CronJob
-- `update_cronjob()` - 更新 CronJob
-- `delete_cronjob()` - 删除 CronJob
-
-#### Ingress 管理
-- `list_ingresses()` - 列出 Ingress
-- `describe_ingress()` - 获取 Ingress 详细信息
-- `create_ingress()` - 创建 Ingress
-- `update_ingress()` - 更新 Ingress
-- `delete_ingress()` - 删除 Ingress
-
-#### StorageClass 管理
-- `list_storageclasses()` - 列出 StorageClass
-- `describe_storageclass()` - 获取 StorageClass 详细信息
-- `create_storageclass()` - 创建 StorageClass
-- `update_storageclass()` - 更新 StorageClass
-- `delete_storageclass()` - 删除 StorageClass
-
-#### PersistentVolume 管理
-- `list_persistentvolumes()` - 列出 PersistentVolume
-- `describe_persistentvolume()` - 获取 PersistentVolume 详细信息
-- `create_persistentvolume()` - 创建 PersistentVolume
-- `update_persistentvolume()` - 更新 PersistentVolume
-- `delete_persistentvolume()` - 删除 PersistentVolume
-
-#### PersistentVolumeClaim 管理
-- `list_persistentvolumeclaims()` - 列出 PersistentVolumeClaim
-- `describe_persistentvolumeclaim()` - 获取 PersistentVolumeClaim 详细信息
-- `create_persistentvolumeclaim()` - 创建 PersistentVolumeClaim
-- `update_persistentvolumeclaim()` - 更新 PersistentVolumeClaim
-- `delete_persistentvolumeclaim()` - 删除 PersistentVolumeClaim
-
-#### ServiceAccount 管理
-- `list_serviceaccounts()` - 列出 ServiceAccount
-- `describe_serviceaccount()` - 获取 ServiceAccount 详细信息
-- `create_serviceaccount()` - 创建 ServiceAccount
-- `update_serviceaccount()` - 更新 ServiceAccount
-- `delete_serviceaccount()` - 删除 ServiceAccount
-
-#### RBAC 管理
-
-##### Role 管理
-- `list_roles()` - 列出 Role
-- `describe_role()` - 获取 Role 详细信息
-- `create_role()` - 创建 Role
-- `update_role()` - 更新 Role
-- `delete_role()` - 删除 Role
-
-##### ClusterRole 管理
-- `list_cluster_roles()` - 列出 ClusterRole
-- `describe_cluster_role()` - 获取 ClusterRole 详细信息
-- `create_cluster_role()` - 创建 ClusterRole
-- `update_cluster_role()` - 更新 ClusterRole
-- `delete_cluster_role()` - 删除 ClusterRole
-
-##### RoleBinding 管理
-- `list_role_bindings()` - 列出 RoleBinding
-- `describe_role_binding()` - 获取 RoleBinding 详细信息
-- `create_role_binding()` - 创建 RoleBinding
-- `update_role_binding()` - 更新 RoleBinding
-- `delete_role_binding()` - 删除 RoleBinding
-
-##### ClusterRoleBinding 管理
-- `list_cluster_role_bindings()` - 列出 ClusterRoleBinding
-- `describe_cluster_role_binding()` - 获取 ClusterRoleBinding 详细信息
-- `create_cluster_role_binding()` - 创建 ClusterRoleBinding
-- `update_cluster_role_binding()` - 创建 ClusterRoleBinding
-- `delete_cluster_role_binding()` - 删除 ClusterRoleBinding
-
-#### 集群基础管理
-- `list_nodes()` - 列出节点
-- `describe_node()` - 获取节点详细信息
-- `list_namespaces()` - 列出命名空间
-- `create_namespace()` - 创建命名空间
-- `delete_namespace()` - 删除命名空间
-- `list_events()` - 列出事件
+#### 集群信息
 - `get_cluster_info()` - 获取集群信息
+
+#### 快捷操作
+- `scale_deployment()` - 快速扩缩容 Deployment
+- `restart_deployment()` - 重启 Deployment
+- `get_resource_usage_summary()` - 获取资源使用摘要
+- `get_failing_pods()` - 获取失败的 Pod 列表
+- `get_recent_events()` - 获取最近的事件
+- `get_pod_logs()` - 获取 Pod 日志
+- `delete_pod()` - 删除 Pod（保留的便利工具）
+- `exec_pod_command()` - 在 Pod 中执行命令
+- `port_forward()` - 配置端口转发到 Pod
 
 ### 集群管理工具 (cluster_tools.py)
 
@@ -267,9 +153,6 @@ k8s-mcp-server/
 - `set_default_cluster()` - 设置默认集群
 - `test_cluster_connection()` - 测试集群连接
 - `get_default_cluster()` - 获取默认集群
-
-### 配置管理工具 (config_tools.py)
-
 - `save_kubeconfig()` - 保存 kubeconfig 文件
 - `load_kubeconfig()` - 加载 kubeconfig 文件
 - `list_kubeconfigs()` - 列出所有保存的 kubeconfig 文件
@@ -277,20 +160,13 @@ k8s-mcp-server/
 - `validate_kubeconfig()` - 验证 kubeconfig 文件
 - `get_kubeconfig_info()` - 获取 kubeconfig 信息
 
-### 诊断工具（diagnostic_tools.py）
+### 诊断工具 (diagnostic_tools.py)
 
 - `check_cluster_health()` - 检查集群健康状态
 - `check_node_health()` - 检查节点健康状态
 - `check_pod_health()` - 检查Pod健康状态
 - `check_resource_usage()` - 检查资源使用情况
 - `get_cluster_events()` - 获取集群事件
-
-### 批量操作工具 (batch_tools.py)
-
-- `batch_list_resources()` - 批量查看资源
-- `batch_create_resources()` - 批量创建资源
-- `batch_update_resources()` - 批量更新资源
-- `batch_delete_resources()` - 批量删除资源
 
 #### 支持的批量操作资源类型
 
@@ -304,6 +180,7 @@ k8s-mcp-server/
 **网络与服务**：
 - Service - 服务暴露
 - Ingress - 入口控制器
+- NetworkPolicy - 网络策略
 
 **配置与存储**：
 - ConfigMap - 配置管理
@@ -311,6 +188,7 @@ k8s-mcp-server/
 - StorageClass - 存储类
 - PersistentVolume - 持久化卷
 - PersistentVolumeClaim - 持久化卷声明
+- ResourceQuota - 资源配额
 
 **权限与身份管理**：
 - Namespace - 命名空间
@@ -319,6 +197,9 @@ k8s-mcp-server/
 - ClusterRole - 集群角色
 - RoleBinding - 角色绑定（命名空间级别）
 - ClusterRoleBinding - 集群角色绑定
+
+**自动扩缩容**：
+- HorizontalPodAutoscaler (HPA) - 水平Pod自动扩缩容
 
 #### 批量操作特性
 
@@ -337,46 +218,10 @@ k8s-mcp-server/
 
 ### RBAC管理工具 (rbac_tools.py)
 
-#### ServiceAccount 管理
-- `list_serviceaccounts()` - 列出命名空间中的ServiceAccount
-- `describe_serviceaccount()` - 获取ServiceAccount详情
-- `create_serviceaccount()` - 创建ServiceAccount
-- `update_serviceaccount()` - 更新ServiceAccount
-- `delete_serviceaccount()` - 删除ServiceAccount
-
-#### Role 管理
-- `list_roles()` - 列出命名空间中的Role
-- `describe_role()` - 获取Role详情
-- `create_role()` - 创建Role
-- `update_role()` - 更新Role
-- `delete_role()` - 删除Role
-
-#### ClusterRole 管理
-- `list_cluster_roles()` - 列出ClusterRole
-- `describe_cluster_role()` - 获取ClusterRole详情
-- `create_cluster_role()` - 创建ClusterRole
-- `delete_cluster_role()` - 删除ClusterRole
-
-#### RoleBinding 管理
-- `list_role_bindings()` - 列出命名空间中的RoleBinding
-- `describe_role_binding()` - 获取RoleBinding详情
-- `create_role_binding()` - 创建RoleBinding
-- `delete_role_binding()` - 删除RoleBinding
-
-#### ClusterRoleBinding 管理
-- `list_cluster_role_bindings()` - 列出ClusterRoleBinding
-- `describe_cluster_role_binding()` - 获取ClusterRoleBinding详情
-- `create_cluster_role_binding()` - 创建ClusterRoleBinding
-- `delete_cluster_role_binding()` - 删除ClusterRoleBinding
-
-#### 角色模板
 - `create_developer_role_template()` - 创建开发者角色模板
 - `create_admin_role_template()` - 创建管理员角色模板
 - `create_operator_role_template()` - 创建运维角色模板
-
-#### 用户绑定
 - `bind_user_to_role()` - 将用户绑定到角色
-- `bind_user_to_cluster_role()` - 将用户绑定到集群角色
 
 ### 变更验证预览系统
 
@@ -397,10 +242,11 @@ k8s-mcp-server/
 #### 支持的资源类型
 涵盖所有主要 Kubernetes 资源的验证和预览：
 - **工作负载**：Deployment, StatefulSet, DaemonSet, Job, CronJob
-- **网络服务**：Service, Ingress
-- **配置存储**：ConfigMap, Secret, PVC, PV, StorageClass
+- **网络服务**：Service, Ingress, NetworkPolicy
+- **配置存储**：ConfigMap, Secret, PVC, PV, StorageClass, ResourceQuota
 - **权限管理**：ServiceAccount, Role, ClusterRole, RoleBinding, ClusterRoleBinding
 - **集群资源**：Namespace, Node
+- **自动扩缩容**：HorizontalPodAutoscaler (HPA)
 
 ### 🔥 特殊功能
 
@@ -887,16 +733,18 @@ kubectl logs -f deployment/k8s-mcp-server
 
 ### 最新版本特性
 
-- ✅ **127+ 个工具函数**：涵盖所有主要 Kubernetes 资源
+- ✅ **41 个工具函数**：涵盖所有主要 Kubernetes 资源
 - ✅ **优雅删除支持**：部分删除函数支持 `grace_period_seconds` 参数
 - ✅ **容器化支持**：提供 Docker 和 Kubernetes 部署
 - ✅ **数据持久化**：支持配置和日志的持久化存储
 - ✅ **健康检查**：提供完整的健康检查机制
 - ✅ **多集群管理**：支持多集群配置和快速切换
-- ✅ **批量操作**：支持18种资源类型的批量操作，包含事务回滚
+- ✅ **批量操作**：支持21种资源类型的批量操作，包含事务回滚
 - ✅ **RBAC管理**：完整的角色和权限管理系统
 - ✅ **备份恢复**：支持命名空间和资源级别的备份恢复
 - ✅ **变更验证预览**：自动验证所有写操作，显示具体变更内容和操作风险
+- ✅ **交互式操作**：支持 Pod 命令执行和端口转发
+- ✅ **扩展资源支持**：新增 HPA、NetworkPolicy、ResourceQuota 支持
 
 
 ## ⚠️ 注意事项
