@@ -891,6 +891,33 @@ class KubernetesAdvancedService:
             "resourcequotas": lambda name, resource: self.k8s_service.update_resource_quota(name=name, namespace=namespace, resource=resource),
         }
         
+        # 获取单个资源操作映射
+        get_operations = {
+            "deployments": lambda name: self.k8s_service.get_deployment(name=name, namespace=namespace),
+            "statefulsets": lambda name: self.k8s_service.get_statefulset(name=name, namespace=namespace),
+            "daemonsets": lambda name: self.k8s_service.get_daemonset(name=name, namespace=namespace),
+            "services": lambda name: self.k8s_service.get_service(name=name, namespace=namespace),
+            "configmaps": lambda name: self.k8s_service.get_configmap(name=name, namespace=namespace),
+            "secrets": lambda name: self.k8s_service.get_secret(name=name, namespace=namespace),
+            "jobs": lambda name: self.k8s_service.get_job(name=name, namespace=namespace),
+            "cronjobs": lambda name: self.k8s_service.get_cronjob(name=name, namespace=namespace),
+            "ingresses": lambda name: self.k8s_service.get_ingress(name=name, namespace=namespace),
+            "storageclasses": lambda name: self.k8s_service.get_storageclass(name=name),
+            "persistentvolumes": lambda name: self.k8s_service.get_persistentvolume(name=name),
+            "persistentvolumeclaims": lambda name: self.k8s_service.get_persistentvolumeclaim(name=name, namespace=namespace),
+            "roles": lambda name: self.k8s_service.get_role(name=name, namespace=namespace),
+            "clusterroles": lambda name: self.k8s_service.get_cluster_role(name=name),
+            "rolebindings": lambda name: self.k8s_service.get_role_binding(name=name, namespace=namespace),
+            "clusterrolebindings": lambda name: self.k8s_service.get_cluster_role_binding(name=name),
+            "serviceaccounts": lambda name: self.k8s_service.get_serviceaccount(name=name, namespace=namespace),
+            "namespaces": lambda name: self.k8s_service.get_namespace(name=name),
+            "pods": lambda name: self.k8s_service.get_pod(name=name, namespace=namespace),
+            "nodes": lambda name: self.k8s_service.get_node(name=name),
+            "horizontalpodautoscalers": lambda name: self.k8s_service.get_hpa(name=name, namespace=namespace),
+            "networkpolicies": lambda name: self.k8s_service.get_network_policy(name=name, namespace=namespace),
+            "resourcequotas": lambda name: self.k8s_service.get_resource_quota(name=name, namespace=namespace),
+        }
+
         # 删除操作映射（带grace_period_seconds支持）
         delete_operations = {
             "deployments": lambda name, grace: self.k8s_service.delete_deployment(name=name, namespace=namespace, grace_period_seconds=grace),
@@ -919,6 +946,7 @@ class KubernetesAdvancedService:
         
         operations_map = {
             "list": list_operations,
+            "get": get_operations,
             "create": create_operations,
             "update": update_operations,
             "delete": delete_operations
@@ -1774,9 +1802,34 @@ class KubernetesAdvancedService:
         
         rules = self._get_role_template_rules(role_type)
         if not rules:
-            raise ValueError(f"不支持的角色类型: {role_type}")
+            return {"success": False, "error": f"不支持的角色类型: {role_type}"}
         
-        return await self.k8s_service.create_role(role_name, namespace, rules)
+        try:
+            # 先检查角色是否已存在
+            try:
+                existing_role = await self.k8s_service.get_role(role_name, namespace)
+                if existing_role:
+                    return {
+                        "success": False,
+                        "error": f"角色 '{role_name}' 在命名空间 '{namespace}' 中已存在",
+                        "suggestion": f"请使用不同的角色名称或删除现有角色后重试"
+                    }
+            except Exception:
+                # 角色不存在，可以创建
+                pass
+            
+            return await self.k8s_service.create_role(role_name, namespace, rules)
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "already exists" in error_msg or "AlreadyExists" in error_msg:
+                return {
+                    "success": False,
+                    "error": f"角色 '{role_name}' 在命名空间 '{namespace}' 中已存在",
+                    "suggestion": f"请使用不同的角色名称或删除现有角色后重试"
+                }
+            else:
+                return {"success": False, "error": str(e)}
 
 
     def _analyze_role_permissions(self, rules: List[Dict]) -> Dict:

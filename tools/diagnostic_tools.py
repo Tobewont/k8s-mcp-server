@@ -153,17 +153,18 @@ async def check_node_health(node_name: str = None, kubeconfig_path: str = None) 
 
 @mcp.tool()
 async def check_pod_health(pod_name: str = None, namespace: str = "default", 
-                     kubeconfig_path: str = None) -> str:
+                     kubeconfig_path: str = None, only_failed: bool = False) -> str:
     """
-    检查Pod健康状态
+    检查Pod健康状态，支持筛选失败的Pod
     
     Args:
         pod_name: Pod名称，如果不提供则检查命名空间中的所有Pod
         namespace: Kubernetes命名空间
         kubeconfig_path: kubeconfig文件路径
+        only_failed: 是否只返回失败或异常的Pod，默认为False
     
     Returns:
-        Pod健康状态报告
+        Pod健康状态报告，包含失败Pod筛选功能
     """
     try:
         k8s_service = KubernetesAPIService()
@@ -206,17 +207,33 @@ async def check_pod_health(pod_name: str = None, namespace: str = "default",
         warning_pods = [p for p in pod_reports if p["status"] == "warning"]
         critical_pods = [p for p in pod_reports if p["status"] == "critical"]
         
-        result = {
-            "success": True,
-            "namespace": namespace,
-            "summary": {
-                "total_pods": len(pod_reports),
-                "healthy": len(healthy_pods),
-                "warning": len(warning_pods),
-                "critical": len(critical_pods)
-            },
-            "pod_details": pod_reports
-        }
+        # 如果只需要失败的Pod，则筛选出critical和warning状态的Pod
+        if only_failed:
+            failed_pods = warning_pods + critical_pods
+            result = {
+                "success": True,
+                "namespace": namespace,
+                "filter": "only_failed_pods",
+                "summary": {
+                    "total_pods_checked": len(pod_reports),
+                    "failed_pods_count": len(failed_pods),
+                    "warning": len(warning_pods),
+                    "critical": len(critical_pods)
+                },
+                "failed_pods": failed_pods
+            }
+        else:
+            result = {
+                "success": True,
+                "namespace": namespace,
+                "summary": {
+                    "total_pods": len(pod_reports),
+                    "healthy": len(healthy_pods),
+                    "warning": len(warning_pods),
+                    "critical": len(critical_pods)
+                },
+                "pod_details": pod_reports
+            }
         
         return json.dumps(result, ensure_ascii=False, indent=2)
         
@@ -225,16 +242,16 @@ async def check_pod_health(pod_name: str = None, namespace: str = "default",
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def check_resource_usage(namespace: str = "all", kubeconfig_path: str = None) -> str:
+async def get_cluster_resource_usage(namespace: str = "all", kubeconfig_path: str = None) -> str:
     """
-    检查资源使用情况
+    获取集群资源使用情况
     
     Args:
-        namespace: Kubernetes命名空间，"all"表示所有命名空间
+        namespace: Kubernetes命名空间，"all"表示所有命名空间，默认为"all"
         kubeconfig_path: kubeconfig文件路径
     
     Returns:
-        资源使用情况报告
+        集群资源使用情况报告
     """
     try:
         k8s_service = KubernetesAPIService()
@@ -358,8 +375,8 @@ async def get_cluster_events(namespace: str = "all", kubeconfig_path: str = None
         if event_type:
             events = [event for event in events if event.get("type") == event_type]
         
-        # 按时间排序（最新的在前）
-        events.sort(key=lambda x: x.get("last_timestamp", ""), reverse=True)
+        # 按时间排序（最新的在前），处理None值
+        events.sort(key=lambda x: x.get("last_timestamp") or "", reverse=True)
         
         # 限制数量
         if limit:
