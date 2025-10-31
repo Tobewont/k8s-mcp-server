@@ -127,20 +127,15 @@ k8s-mcp-server/
 - `batch_update_resources()` - 批量更新资源
 - `batch_delete_resources()` - 批量删除资源
 - `batch_describe_resources()` - 批量获取资源详细信息
+- `batch_restart_resources()` - 批量重启资源（Deployment、StatefulSet、DaemonSet）
 
 ### 核心工具 (k8s_tools.py)
 
 #### 集群信息
 - `get_cluster_info()` - 获取集群信息
 
-#### 快捷操作
-- `scale_deployment()` - 快速扩缩容 Deployment
-- `restart_deployment()` - 重启 Deployment
-- `get_resource_usage_summary()` - 获取资源使用摘要
-- `get_failing_pods()` - 获取失败的 Pod 列表
-- `get_recent_events()` - 获取最近的事件
+#### Pod 操作工具
 - `get_pod_logs()` - 获取 Pod 日志
-- `delete_pod()` - 删除 Pod（保留的便利工具）
 - `exec_pod_command()` - 在 Pod 中执行命令
 - `port_forward()` - 配置端口转发到 Pod
 
@@ -164,8 +159,8 @@ k8s-mcp-server/
 
 - `check_cluster_health()` - 检查集群健康状态
 - `check_node_health()` - 检查节点健康状态
-- `check_pod_health()` - 检查Pod健康状态
-- `check_resource_usage()` - 检查资源使用情况
+- `check_pod_health()` - 检查Pod健康状态（支持筛选失败Pod）
+- `get_cluster_resource_usage()` - 获取集群资源使用情况（支持指定命名空间）
 - `get_cluster_events()` - 获取集群事件
 
 #### 支持的批量操作资源类型

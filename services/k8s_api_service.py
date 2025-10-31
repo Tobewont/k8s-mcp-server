@@ -2006,17 +2006,45 @@ class KubernetesAPIService:
         async def update_operation():
             if resource is not None:
                 # 批量操作模式，传入完整的资源定义
-                body = resource
-                # 确保metadata中有正确的name和namespace
-                if 'metadata' not in body:
-                    body['metadata'] = {}
-                body['metadata']['name'] = name
-                body['metadata']['namespace'] = namespace
+                # 获取当前Service以保持完整性
+                current_service = self.v1_api.read_namespaced_service(name, namespace)
                 
-                response = self.v1_api.patch_namespaced_service(
+                # 更新指定的字段
+                if 'metadata' in resource:
+                    if 'labels' in resource['metadata']:
+                        if current_service.metadata.labels is None:
+                            current_service.metadata.labels = {}
+                        current_service.metadata.labels.update(resource['metadata']['labels'])
+                    if 'annotations' in resource['metadata']:
+                        if current_service.metadata.annotations is None:
+                            current_service.metadata.annotations = {}
+                        current_service.metadata.annotations.update(resource['metadata']['annotations'])
+                
+                if 'spec' in resource:
+                    if 'ports' in resource['spec']:
+                        # 替换端口配置
+                        current_service.spec.ports = []
+                        for i, port in enumerate(resource['spec']['ports']):
+                            service_port = client.V1ServicePort(
+                                port=port.get("port"),
+                                target_port=port.get("targetPort") or port.get("target_port"),
+                                protocol=port.get("protocol", "TCP"),
+                                name=port.get("name") or f"port-{port.get('port', i)}"
+                            )
+                            if port.get("nodePort") or port.get("node_port"):
+                                service_port.node_port = port.get("nodePort") or port.get("node_port")
+                            current_service.spec.ports.append(service_port)
+                    
+                    if 'selector' in resource['spec']:
+                        current_service.spec.selector = resource['spec']['selector']
+                    
+                    if 'type' in resource['spec']:
+                        current_service.spec.type = resource['spec']['type']
+                
+                response = self.v1_api.replace_namespaced_service(
                     name=name,
                     namespace=namespace,
-                    body=body
+                    body=current_service
                 )
             else:
                 # 单体操作模式，使用简化参数更新
@@ -6385,6 +6413,33 @@ class KubernetesAPIService:
             
         except ApiException as e:
             raise Exception(f"获取 Namespace 列表失败: {e.reason}")
+
+    async def get_namespace(self, name: str) -> Dict[str, Any]:
+        """获取 Namespace 详情"""
+        try:
+            namespace = self.v1_api.read_namespace(name=name)
+            
+            return {
+                "name": namespace.metadata.name,
+                "uid": namespace.metadata.uid,
+                "status": namespace.status.phase,
+                "created": to_local_time_str(namespace.metadata.creation_timestamp, 8) if namespace.metadata.creation_timestamp else None,
+                "labels": namespace.metadata.labels or {},
+                "annotations": namespace.metadata.annotations or {},
+                "conditions": [
+                    {
+                        "type": condition.type,
+                        "status": condition.status,
+                        "reason": condition.reason,
+                        "message": condition.message,
+                        "last_transition_time": to_local_time_str(condition.last_transition_time, 8) if condition.last_transition_time else None
+                    }
+                    for condition in (namespace.status.conditions or [])
+                ]
+            }
+            
+        except ApiException as e:
+            raise Exception(f"获取 Namespace 详情失败: {e.reason}")
 
     async def create_namespace(self, name: str = None, labels: Dict[str, str] = None, 
                         annotations: Dict[str, str] = None, resource: Dict = None, **kwargs) -> Dict[str, Any]:
