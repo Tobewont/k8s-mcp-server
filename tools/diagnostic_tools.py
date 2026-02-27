@@ -368,8 +368,8 @@ async def get_cluster_events(namespace: str = "all", kubeconfig_path: str = None
         k8s_service = KubernetesAPIService()
         k8s_service.load_config(kubeconfig_path=kubeconfig_path)
         
-        # 获取事件
-        events = await k8s_service.list_events(namespace=namespace if namespace != "all" else "default")
+        # 获取事件（list_events 支持 namespace="all" 获取所有命名空间）
+        events = await k8s_service.list_events(namespace=namespace)
         
         # 如果指定了事件类型，进行过滤
         if event_type:

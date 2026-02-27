@@ -6282,22 +6282,96 @@ class KubernetesAPIService:
 
     async def port_forward(self, pod_name: str, local_port: int, pod_port: int,
                           namespace: str = "default") -> Dict[str, Any]:
-        """Pod端口转发"""
-        try:
-            # 注意：实际的端口转发需要使用kubernetes.stream模块
-            # 这里返回端口转发的配置信息
-            return {
-                "pod_name": pod_name,
-                "namespace": namespace,
-                "local_port": local_port,
-                "pod_port": pod_port,
-                "status": "configured",
-                "message": f"端口转发配置完成: localhost:{local_port} -> {pod_name}:{pod_port}",
-                "note": "实际端口转发需要在客户端执行 kubectl port-forward 命令"
-            }
-            
-        except Exception as e:
-            raise Exception(f"配置端口转发失败: {str(e)}")
+        """Pod端口转发 - 在本地端口与Pod端口之间建立真实转发"""
+        import threading
+        import socket
+        import select
+        from kubernetes.stream import portforward
+
+        def _bridge_sockets(local_sock, remote_sock):
+            """双向转发两个 socket 之间的数据"""
+            try:
+                while True:
+                    rlist, _, xlist = select.select([local_sock, remote_sock], [], [local_sock, remote_sock], 60)
+                    if xlist:
+                        break
+                    for sock in rlist:
+                        try:
+                            data = sock.recv(65536)
+                            if not data:
+                                return
+                            other = remote_sock if sock is local_sock else local_sock
+                            other.sendall(data)
+                        except (ConnectionResetError, BrokenPipeError, OSError):
+                            return
+            finally:
+                try:
+                    local_sock.close()
+                except Exception:
+                    pass
+                try:
+                    remote_sock.close()
+                except Exception:
+                    pass
+
+        def _handle_connection(client_socket):
+            """处理单个连接：建立 portforward 并桥接数据"""
+            try:
+                pf = portforward(
+                    self.v1_api.connect_get_namespaced_pod_portforward,
+                    pod_name,
+                    namespace,
+                    ports=str(pod_port),
+                )
+                remote_sock = pf.socket(pod_port)
+                remote_sock.setblocking(True)
+                _bridge_sockets(client_socket, remote_sock)
+            except Exception:
+                pass
+            finally:
+                try:
+                    client_socket.close()
+                except Exception:
+                    pass
+
+        run_flag = {"running": True}
+
+        def _run_forward_server():
+            """在后台运行 TCP 服务器，将本地端口流量转发到 Pod"""
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                server.bind(("127.0.0.1", local_port))
+                server.listen(5)
+                server.settimeout(1.0)
+                while run_flag["running"]:
+                    try:
+                        client_sock, _ = server.accept()
+                        t = threading.Thread(target=_handle_connection, args=(client_sock,), daemon=True)
+                        t.start()
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
+            finally:
+                try:
+                    server.close()
+                except Exception:
+                    pass
+
+        # 启动后台转发线程
+        server_thread = threading.Thread(target=_run_forward_server, daemon=True)
+        server_thread.start()
+
+        return {
+            "pod_name": pod_name,
+            "namespace": namespace,
+            "local_port": local_port,
+            "pod_port": pod_port,
+            "status": "running",
+            "message": f"端口转发已启动: localhost:{local_port} -> {pod_name}:{pod_port}",
+            "note": "转发在后台运行，访问 http://127.0.0.1:{local_port} 可访问 Pod 服务。进程退出时自动停止。".format(local_port=local_port),
+        }
 
     # ========================== Node 服务层方法 ==========================
 

@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from services.k8s_advanced_service import KubernetesAdvancedService
-
+from utils.operations_logger import log_operation
 
 # 导入共享的MCP实例
 from . import mcp
@@ -26,7 +26,8 @@ async def backup_namespace(namespace: str, cluster_name: str = None, include_sec
     try:
         service = KubernetesAdvancedService()
         backup_file = await service.backup_namespace(namespace, cluster_name, include_secrets)
-        
+        log_operation("backup_namespace", "backup", {"namespace": namespace, "cluster_name": cluster_name, "backup_file": backup_file}, True)
+
         return json.dumps({
             "success": True,
             "backup_file": backup_file,
@@ -51,7 +52,8 @@ async def backup_resource(resource_type: str, resource_name: str, namespace: str
     try:
         service = KubernetesAdvancedService()
         backup_file = await service.backup_specific_resource(resource_type, resource_name, namespace, cluster_name)
-        
+        log_operation("backup_resource", "backup", {"resource_type": resource_type, "resource_name": resource_name, "namespace": namespace, "backup_file": backup_file}, True)
+
         return json.dumps({
             "success": True,
             "backup_file": backup_file,
@@ -75,7 +77,9 @@ async def restore_from_backup(backup_file: str, target_namespace: str = None,
     try:
         service = KubernetesAdvancedService()
         results = await service.restore_from_backup(backup_file, target_namespace, target_cluster)
-        
+        success = results.get("success", True) if isinstance(results, dict) else True
+        log_operation("restore_from_backup", "restore", {"backup_file": backup_file, "target_namespace": target_namespace, "target_cluster": target_cluster}, success)
+
         return json.dumps(results, ensure_ascii=False, indent=2)
         
     except Exception as e:

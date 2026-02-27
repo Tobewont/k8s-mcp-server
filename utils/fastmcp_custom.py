@@ -92,8 +92,11 @@ class FastMCP(_FastMCP):
         return self._mcp_server
 
     def sse_app(self) -> Starlette:
-        """Return an instance of the SSE server app."""
+        """Return an instance of the SSE server app with SSE and Streamable HTTP support."""
         sse = SseServerTransport(self.settings.message_path)
+        streamable_path = getattr(
+            self.settings, "streamable_http_path", "/streamable"
+        )
 
         async def handle_sse(request: Request) -> None:
             try:
@@ -112,24 +115,66 @@ class FastMCP(_FastMCP):
                 logger.error(f"Error in SSE connection: {e}")
                 raise
 
+        # Streamable HTTP: 单一端点同时支持 GET(SSE) 和 POST(消息)
+        streamable_transport = SseServerTransport(streamable_path)
+
+        async def handle_streamable_get(request: Request) -> None:
+            try:
+                async with streamable_transport.connect_sse(
+                    request.scope,
+                    request.receive,
+                    request._send,  # type: ignore[reportPrivateUsage]
+                ) as streams:
+                    await self.mcp_server.run(
+                        streams[0],
+                        streams[1],
+                        self._mcp_server.create_initialization_options(),
+                        scope=request.scope
+                    )
+            except Exception as e:
+                logger.error(f"Error in Streamable HTTP GET: {e}")
+                raise
+
+        class StreamableASGIApp:
+            """ASGI 应用：按 HTTP 方法分发，不返回值由 send 发送响应"""
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] != "http":
+                    return
+                request = Request(scope, receive, send)
+                if request.method == "GET":
+                    await handle_streamable_get(request)
+                else:
+                    await streamable_transport.handle_post_message(
+                        scope, receive, send
+                    )
+
         # Define the middleware
         middleware = [
             Middleware(
                 CORSMiddleware,
-                allow_origins=["*"], # Allows all origins
+                allow_origins=["*"],
                 allow_credentials=True,
-                allow_methods=["*"], # Allows all methods
-                allow_headers=["*"], # Allows all headers
+                allow_methods=["*"],
+                allow_headers=["*"],
             )
+        ]
+
+        routes = [
+            Route(self.settings.sse_path, endpoint=handle_sse, methods=["GET"]),
+            Mount(self.settings.message_path, app=sse.handle_post_message),
+            # Streamable HTTP: ASGI 应用，GET=SSE 连接，POST=消息
+            Route(
+                streamable_path,
+                endpoint=StreamableASGIApp(),
+                methods=["GET", "POST"],
+            ),
         ]
 
         return Starlette(
             debug=self.settings.debug,
-            routes=[
-                Route(self.settings.sse_path, endpoint=handle_sse),
-                Mount(self.settings.message_path, app=sse.handle_post_message),
-            ],
-            middleware=middleware # Add the middleware here
+            routes=routes,
+            middleware=middleware,
         )
 
     def create_app(self) -> Starlette:

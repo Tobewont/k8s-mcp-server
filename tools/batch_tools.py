@@ -7,7 +7,7 @@ import json
 import asyncio
 from typing import List, Dict, Any, Optional
 from services.k8s_advanced_service import KubernetesAdvancedService
-
+from utils.operations_logger import log_operation
 
 # 导入共享的MCP实例
 from . import mcp
@@ -83,7 +83,10 @@ async def batch_create_resources(resources: str, namespace: str = "default",
                 return json.dumps({"success": False, "error": "每个资源的metadata必须包含name字段"}, ensure_ascii=False, indent=2)
         
         result = await service.batch_create_resources(resources_list, namespace)
-        
+        created = [r.get("name", r.get("kind", "")) for r in result.get("success", [])]
+        failed = [r.get("name", r.get("kind", "")) for r in result.get("failed", [])]
+        log_operation("batch_create_resources", "create", {"namespace": namespace, "created": created, "failed": failed}, len(failed) == 0)
+
         # 如果有失败且需要回滚
         if result["failed"] and rollback_on_failure and result["success"]:
             # 回滚已创建的资源
@@ -138,7 +141,10 @@ async def batch_update_resources(resources: str, namespace: str = "default") -> 
                 return json.dumps({"success": False, "error": "每个资源的metadata必须包含name字段"}, ensure_ascii=False, indent=2)
         
         result = await service.batch_update_resources(resources_list, namespace)
-        
+        updated = [r.get("name", r.get("kind", "")) for r in result.get("success", [])]
+        failed = [r.get("name", r.get("kind", "")) for r in result.get("failed", [])]
+        log_operation("batch_update_resources", "update", {"namespace": namespace, "updated": updated, "failed": failed}, len(failed) == 0)
+
         return json.dumps(result, ensure_ascii=False, indent=2)
         
     except Exception as e:
@@ -182,7 +188,10 @@ async def batch_delete_resources(resources: str, namespace: str = "default",
                 return json.dumps({"success": False, "error": "每个资源的metadata必须包含name字段"}, ensure_ascii=False, indent=2)
         
         result = await service.batch_delete_resources(resources_list, namespace, grace_period_seconds)
-        
+        deleted = [r.get("name", r.get("metadata", {}).get("name", "")) for r in result.get("success", [])]
+        failed = [r.get("name", r.get("metadata", {}).get("name", "")) for r in result.get("failed", [])]
+        log_operation("batch_delete_resources", "delete", {"namespace": namespace, "deleted": deleted, "failed": failed}, len(failed) == 0)
+
         return json.dumps(result, ensure_ascii=False, indent=2)
         
     except Exception as e:
@@ -308,7 +317,10 @@ async def batch_restart_resources(resources: str, namespace: str = "default") ->
             "total": len(resources_list),
             "message": f"批量重启完成: 成功 {len(result.get('success', []))}, 失败 {len(result.get('failed', []))}"
         }
-        
+        restarted = [r.get("name", "") for r in result.get("success", [])]
+        failed = [r.get("name", "") for r in result.get("failed", [])]
+        log_operation("batch_restart_resources", "update", {"namespace": namespace, "restarted": restarted, "failed": failed}, len(failed) == 0)
+
         return json.dumps(formatted_result, ensure_ascii=False, indent=2)
         
     except Exception as e:
