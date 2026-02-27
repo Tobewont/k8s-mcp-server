@@ -6,17 +6,16 @@ import json
 import os
 import yaml
 from typing import Dict, List, Any, Optional
+
+from config import KUBECONFIGS_DIR
 from utils.cluster_config import ClusterConfigManager, ClusterInfo
+from utils.operations_logger import log_operation
 
 # 导入共享的MCP实例
 from . import mcp
 
 # 初始化集群配置管理器
 cluster_config = ClusterConfigManager()
-
-# 配置目录
-CONFIG_DIR = "data/kubeconfigs"
-os.makedirs(CONFIG_DIR, exist_ok=True)
 
 # ========================== 集群管理工具 ==========================
 
@@ -60,7 +59,8 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         )
         
         success = cluster_config.add_cluster(cluster_info)
-        
+        log_operation("import_cluster", "import", {"name": name, "is_default": is_default}, success)
+
         if success:
             result = {
                 "success": True,
@@ -86,12 +86,9 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def list_clusters(random_string: str = "") -> str:
+async def list_clusters() -> str:
     """
     列出所有集群配置
-    
-    Args:
-        random_string: 临时参数，用于解决MCP框架兼容性问题
     
     Returns:
         集群列表
@@ -163,7 +160,8 @@ async def delete_cluster(name: str) -> str:
     """
     try:
         success = cluster_config.remove_cluster(name)
-        
+        log_operation("delete_cluster", "delete", {"name": name}, success)
+
         if success:
             result = {
                 "success": True,
@@ -195,7 +193,8 @@ async def set_default_cluster(name: str) -> str:
     try:
         # 直接使用集群配置管理器的方法设置默认集群
         success = cluster_config.set_default_cluster(name)
-        
+        log_operation("set_default_cluster", "update", {"name": name}, success)
+
         if success:
             result = {
                 "success": True,
@@ -261,12 +260,9 @@ async def test_cluster_connection(name: str) -> str:
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def get_default_cluster(random_string: str = "") -> str:
+async def get_default_cluster() -> str:
     """
     获取默认集群
-    
-    Args:
-        random_string: 临时参数，用于解决MCP框架兼容性问题
     
     Returns:
         默认集群信息
@@ -311,7 +307,7 @@ async def save_kubeconfig(name: str, content: str) -> str:
         保存结果
     """
     try:
-        config_path = os.path.join(CONFIG_DIR, f"{name}.yaml")
+        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
         
         # 验证kubeconfig格式
         try:
@@ -326,7 +322,8 @@ async def save_kubeconfig(name: str, content: str) -> str:
         # 保存文件
         with open(config_path, 'w', encoding='utf-8') as f:
             f.write(content)
-        
+        log_operation("save_kubeconfig", "create", {"name": name}, True)
+
         result = {
             "success": True,
             "message": f"kubeconfig '{name}' 保存成功",
@@ -351,7 +348,7 @@ async def load_kubeconfig(name: str) -> str:
         kubeconfig文件内容
     """
     try:
-        config_path = os.path.join(CONFIG_DIR, f"{name}.yaml")
+        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
         
         if not os.path.exists(config_path):
             error_result = {"success": False, "error": f"kubeconfig '{name}' 不存在"}
@@ -374,18 +371,15 @@ async def load_kubeconfig(name: str) -> str:
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
-async def list_kubeconfigs(random_string: str = "") -> str:
+async def list_kubeconfigs() -> str:
     """
     列出所有保存的kubeconfig文件
-    
-    Args:
-        random_string: 临时参数，用于解决MCP框架兼容性问题
     
     Returns:
         kubeconfig文件列表
     """
     try:
-        if not os.path.exists(CONFIG_DIR):
+        if not os.path.exists(KUBECONFIGS_DIR):
             result = {
                 "success": True,
                 "kubeconfigs": [],
@@ -394,10 +388,10 @@ async def list_kubeconfigs(random_string: str = "") -> str:
             return json.dumps(result, ensure_ascii=False, indent=2)
         
         kubeconfigs = []
-        for filename in os.listdir(CONFIG_DIR):
+        for filename in os.listdir(KUBECONFIGS_DIR):
             if filename.endswith('.yaml') or filename.endswith('.yml'):
                 name = os.path.splitext(filename)[0]
-                config_path = os.path.join(CONFIG_DIR, filename)
+                config_path = os.path.join(KUBECONFIGS_DIR, filename)
                 
                 # 获取文件信息
                 stat = os.stat(config_path)
@@ -432,14 +426,15 @@ async def delete_kubeconfig(name: str) -> str:
         删除结果
     """
     try:
-        config_path = os.path.join(CONFIG_DIR, f"{name}.yaml")
+        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
         
         if not os.path.exists(config_path):
             error_result = {"success": False, "error": f"kubeconfig '{name}' 不存在"}
             return json.dumps(error_result, ensure_ascii=False, indent=2)
         
         os.remove(config_path)
-        
+        log_operation("delete_kubeconfig", "delete", {"name": name}, True)
+
         result = {
             "success": True,
             "message": f"kubeconfig '{name}' 删除成功"
@@ -531,7 +526,7 @@ async def get_kubeconfig_info(name: str) -> str:
         kubeconfig详细信息
     """
     try:
-        config_path = os.path.join(CONFIG_DIR, f"{name}.yaml")
+        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
         
         if not os.path.exists(config_path):
             error_result = {"success": False, "error": f"kubeconfig '{name}' 不存在"}

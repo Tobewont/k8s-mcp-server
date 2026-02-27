@@ -32,8 +32,9 @@ SSE_HOST = os.getenv("SSE_HOST", "0.0.0.0")
 SSE_PORT = int(os.getenv("SSE_PORT", "8000"))
 
 # MCP配置
-MCP_MESSAGE_PATH = "/mcp/k8s-server/message/"
-MCP_SSE_PATH = "/mcp/k8s-server/sse"
+MCP_MESSAGE_PATH = os.getenv("MCP_MESSAGE_PATH", "/mcp/k8s-server/message/")
+MCP_SSE_PATH = os.getenv("MCP_SSE_PATH", "/mcp/k8s-server/sse")
+MCP_STREAMABLE_PATH = os.getenv("MCP_STREAMABLE_PATH", "/mcp/k8s-server/streamable")
 
 # MCP FastMCP 服务器配置
 MCP_SERVER_CONFIG = {
@@ -47,7 +48,7 @@ MCP_SERVER_CONFIG = {
     "mount_path": os.getenv("MCP_MOUNT_PATH", "/"),
     "sse_path": MCP_SSE_PATH,
     "message_path": MCP_MESSAGE_PATH,
-    "streamable_http_path": os.getenv("MCP_STREAMABLE_PATH", "/streamable"),
+    "streamable_http_path": MCP_STREAMABLE_PATH,
     
     # 行为配置
     "json_response": os.getenv("MCP_JSON_RESPONSE", "false").lower() == "true",

@@ -6,7 +6,7 @@ RBAC管理工具
 import json
 from typing import List, Dict, Any, Optional
 from services.k8s_advanced_service import KubernetesAdvancedService
-
+from utils.operations_logger import log_operation
 
 # 导入共享的MCP实例
 from . import mcp
@@ -50,6 +50,7 @@ async def create_role_template(template_type: str, namespace: str, role_name: st
         
         # 添加模板描述信息
         if result.get("success"):
+            log_operation("create_role_template", "create", {"template_type": template_type, "role_name": role_name, "namespace": namespace}, True)
             result["template_info"] = {
                 "type": template_type,
                 "description": supported_templates[template_type],

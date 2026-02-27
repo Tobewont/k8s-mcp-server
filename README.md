@@ -9,7 +9,7 @@
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
-- **全面的 K8s 操作**：支持 41 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **全面的 K8s 操作**：支持 36 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
 - **双重传输协议**：同时支持 SSE 和 Stdio 两种传输方式
@@ -51,6 +51,40 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 
 **SSE 模式**：通过 Server-Sent Events 接口（`http://localhost:8000/mcp/k8s-server/sse`）提供 HTTP 服务
 
+**Streamable HTTP 模式**：单一端点同时支持 GET(SSE) 和 POST，推荐 Cursor 等客户端使用（`http://localhost:8000/mcp/k8s-server/streamable`）
+
+#### Cursor MCP 配置
+
+在 Cursor 全局 MCP 配置（如 `~/.cursor/mcp.json` 或项目 `.cursor/mcp.json`）中添加：
+
+```json
+{
+  "mcpServers": {
+    "k8s-mcp-server": {
+      "url": "http://localhost:8000/mcp/k8s-server/streamable"
+    }
+  }
+}
+```
+
+**启动服务**：`python main.py --transport sse --port 8000`
+
+备选 Stdio 模式（无需先启动 HTTP 服务）：
+
+```json
+{
+  "mcpServers": {
+    "k8s-mcp-server": {
+      "command": "python",
+      "args": ["main.py", "--transport", "stdio"],
+      "cwd": "项目路径"
+    }
+  }
+}
+```
+
+配置后重启 Cursor 或执行 **Developer: Reload Window**，即可在 MCP 工具列表中看到 36 个工具。
+
 ### 容器化部署
 
 ```bash
@@ -79,10 +113,10 @@ k8s-mcp-server/
 │   └── k8s_advanced_service.py  # Kubernetes 进阶服务层（批量操作、备份恢复、RBAC、验证）
 ├── tools/
 │   ├── __init__.py              # FastMCP 实例和工具模块导入
-│   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (10个工具)
+│   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (4个工具)
 │   ├── cluster_tools.py         # 多集群配置管理 (13个工具)
 │   ├── diagnostic_tools.py      # 集群诊断工具 (5个工具)
-│   ├── batch_tools.py           # 批量操作工具 (5个工具)
+│   ├── batch_tools.py           # 批量操作工具 (6个工具)
 │   ├── backup_tools.py          # 备份恢复工具 (4个工具)
 │   └── rbac_tools.py            # RBAC管理工具 (4个工具)
 ├── utils/
@@ -118,6 +152,19 @@ k8s-mcp-server/
 7. **容器化支持**：提供 Docker 和 Kubernetes 部署支持
 
 ## 🛠️ 主要功能
+
+### 工具分类总览
+
+| 分类 | 模块 | 工具数 | 说明 |
+|------|------|--------|------|
+| 核心工具 | k8s_tools | 4 | 集群信息、Pod 日志、执行命令、端口转发 |
+| 集群管理 | cluster_tools | 13 | 集群导入/切换、kubeconfig 管理 |
+| 诊断工具 | diagnostic_tools | 5 | 集群/节点/Pod 健康、资源使用、事件 |
+| 批量操作 | batch_tools | 6 | 批量增删改查、重启资源 |
+| 备份恢复 | backup_tools | 4 | 命名空间/资源备份与恢复 |
+| RBAC 管理 | rbac_tools | 4 | 角色模板、权限分析、冲突检查 |
+
+**说明**：`list_clusters` 列出已导入的集群注册信息；`list_kubeconfigs` 列出 `data/kubeconfigs/` 目录下保存的 kubeconfig 文件。
 
 ### K8s 资源管理 (batch_tools.py)
 
@@ -213,10 +260,10 @@ k8s-mcp-server/
 
 ### RBAC管理工具 (rbac_tools.py)
 
-- `create_developer_role_template()` - 创建开发者角色模板
-- `create_admin_role_template()` - 创建管理员角色模板
-- `create_operator_role_template()` - 创建运维角色模板
-- `bind_user_to_role()` - 将用户绑定到角色
+- `create_role_template(template_type, namespace, role_name)` - 创建角色模板（developer/admin/operator/readonly/deployer/monitor/debug）
+- `analyze_serviceaccount_permissions()` - 分析 ServiceAccount 的权限
+- `check_serviceaccount_permission_conflicts()` - 检查命名空间内 SA 权限冲突
+- `list_role_serviceaccounts()` - 列出绑定到某角色的所有 ServiceAccount
 
 ### 变更验证预览系统
 
@@ -261,53 +308,27 @@ k8s-mcp-server/
 所有功能都可以通过 MCP 客户端调用。系统支持自动加载默认集群配置：
 
 ```json
-// 使用默认集群配置（推荐）
+// 批量列出资源（使用默认集群配置）
 {
   "method": "tools/call",
   "params": {
-    "name": "list_pods",
+    "name": "batch_list_resources",
     "arguments": {
+      "resource_types": "pods,nodes,namespaces",
       "namespace": "default"
     }
   }
 }
 
-// 优雅删除 Pod（设置等待时间为 30 秒）
+// 批量删除资源（支持 grace_period_seconds）
 {
   "method": "tools/call",
   "params": {
-    "name": "delete_pod",
+    "name": "batch_delete_resources",
     "arguments": {
-      "name": "my-pod",
+      "resources": "[{\"kind\":\"Pod\",\"name\":\"my-pod\"}]",
       "namespace": "default",
       "grace_period_seconds": 30
-    }
-  }
-}
-
-// 强制删除 Pod（立即删除）
-{
-  "method": "tools/call",
-  "params": {
-    "name": "delete_pod",
-    "arguments": {
-      "name": "my-pod",
-      "namespace": "default",
-      "grace_period_seconds": 0
-    }
-  }
-}
-
-// 创建 Deployment
-{
-  "method": "tools/call",
-  "params": {
-    "name": "create_deployment",
-    "arguments": {
-      "name": "my-app",
-      "image": "nginx:latest",
-      "replicas": 3,
-      "namespace": "default"
     }
   }
 }
@@ -336,12 +357,13 @@ k8s-mcp-server/
   }
 }
 
-// 创建开发者角色
+// 创建角色模板（template_type: developer/admin/operator/readonly/deployer/monitor/debug）
 {
   "method": "tools/call",
   "params": {
-    "name": "create_developer_role_template",
+    "name": "create_role_template",
     "arguments": {
+      "template_type": "developer",
       "namespace": "my-app",
       "role_name": "developer"
     }
@@ -406,8 +428,11 @@ k8s-mcp-server/
 {
   "method": "tools/call",
   "params": {
-    "name": "list_pods",
-    "arguments": {}
+    "name": "batch_list_resources",
+    "arguments": {
+      "resource_types": "pods",
+      "namespace": "default"
+    }
   }
 }
 ```
@@ -520,11 +545,12 @@ LOGS_DIR=./logs
 # MCP配置
 MCP_MESSAGE_PATH=/mcp/k8s-server/message/
 MCP_SSE_PATH=/mcp/k8s-server/sse
+MCP_STREAMABLE_PATH=/mcp/k8s-server/streamable  # Streamable HTTP 端点
 
 # 日志配置
 LOG_LEVEL=info
 LOG_FILE=./logs/k8s-mcp-server.log
-OPERATIONS_LOG_FILE=./logs/operations.log
+OPERATIONS_LOG_FILE=./logs/operations.log  # 写操作日志（create/update/delete/backup/restore 等）
 ```
 
 ### kubeconfig 管理
@@ -686,8 +712,8 @@ import_cluster(
 一旦设置了默认集群，所有操作都可以简化：
 
 ```bash
-# 列出 Pod（自动使用默认集群和命名空间）
-list_pods()
+# 批量列出 Pod（自动使用默认集群和命名空间）
+batch_list_resources(resource_types="pods", namespace="default")
 
 # 查看集群信息
 get_cluster_info()
@@ -695,8 +721,8 @@ get_cluster_info()
 # 检查集群健康状态
 check_cluster_health()
 
-# 创建 Deployment
-create_deployment(name="my-app", image="nginx:latest", replicas=3)
+# 批量创建资源（含 Deployment）
+batch_create_resources(resources="[{...}]", namespace="default")
 ```
 
 ### 3. 管理多集群
@@ -728,7 +754,7 @@ kubectl logs -f deployment/k8s-mcp-server
 
 ### 最新版本特性
 
-- ✅ **41 个工具函数**：涵盖所有主要 Kubernetes 资源
+- ✅ **36 个工具函数**：涵盖所有主要 Kubernetes 资源
 - ✅ **优雅删除支持**：部分删除函数支持 `grace_period_seconds` 参数
 - ✅ **容器化支持**：提供 Docker 和 Kubernetes 部署
 - ✅ **数据持久化**：支持配置和日志的持久化存储
