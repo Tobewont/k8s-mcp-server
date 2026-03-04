@@ -16,6 +16,7 @@ class KubernetesAPIService:
     """Kubernetes API 服务类"""
     
     def __init__(self):
+        self._api_client = None
         self.v1_api = None
         self.apps_v1_api = None
         self.networking_v1_api = None
@@ -449,6 +450,7 @@ class KubernetesAPIService:
                 config.load_kube_config()
         
         # 初始化 API 客户端
+        self._api_client = client.ApiClient()
         self.v1_api = client.CoreV1Api()
         self.apps_v1_api = client.AppsV1Api()
         self.networking_v1_api = client.NetworkingV1Api()
@@ -6805,3 +6807,10 @@ class KubernetesAPIService:
             }
         except Exception as e:
             return {"error": str(e)}
+
+    def get_dynamic_client(self):
+        """获取 DynamicClient，用于动态操作任意 API 资源"""
+        if self._api_client is None:
+            raise RuntimeError("API 客户端未初始化，请先调用 load_config()")
+        from kubernetes.dynamic import DynamicClient
+        return DynamicClient(self._api_client)

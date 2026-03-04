@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable
 from services.k8s_api_service import KubernetesAPIService
+from services.dynamic_resource_service import DynamicResourceService
 from config import DATA_DIR, BACKUP_DIR_NAME
 
 
@@ -110,6 +111,8 @@ class KubernetesAdvancedService:
         
         # 初始化资源管理器
         self.resource_manager = ResourceManager(self.k8s_service)
+        # 动态资源服务（支持集群中所有 API 资源）
+        self._dynamic_service = DynamicResourceService(self.k8s_service)
 
         # 设置验证服务的循环引用
         self.k8s_service.set_validation_service(self)
@@ -132,6 +135,25 @@ class KubernetesAdvancedService:
             "HorizontalPodAutoscaler": "autoscaling/v2",
             "NetworkPolicy": "networking.k8s.io/v1",
             "ResourceQuota": "v1",
+            "Namespace": "v1",
+            "Node": "v1",
+            "Pod": "v1",
+            "PersistentVolume": "v1",
+            "StorageClass": "storage.k8s.io/v1",
+            "ClusterRole": "rbac.authorization.k8s.io/v1",
+            "ClusterRoleBinding": "rbac.authorization.k8s.io/v1",
+        }
+        # resource_type (复数) -> kind，用于动态解析
+        self._resource_type_to_kind: Dict[str, str] = {
+            "deployments": "Deployment", "statefulsets": "StatefulSet", "daemonsets": "DaemonSet",
+            "services": "Service", "configmaps": "ConfigMap", "secrets": "Secret",
+            "jobs": "Job", "cronjobs": "CronJob", "ingresses": "Ingress",
+            "persistentvolumeclaims": "PersistentVolumeClaim", "persistentvolumes": "PersistentVolume",
+            "serviceaccounts": "ServiceAccount", "roles": "Role", "rolebindings": "RoleBinding",
+            "clusterroles": "ClusterRole", "clusterrolebindings": "ClusterRoleBinding",
+            "namespaces": "Namespace", "pods": "Pod", "nodes": "Node",
+            "horizontalpodautoscalers": "HorizontalPodAutoscaler", "networkpolicies": "NetworkPolicy",
+            "resourcequotas": "ResourceQuota", "storageclasses": "StorageClass",
         }
 
     # ==================== 规格归一化（备份/恢复通用） ====================
@@ -960,15 +982,49 @@ class KubernetesAdvancedService:
         
         return operations_map[operation][resource_type]
 
+    def _resolve_to_api_version_kind(self, resource_type: str) -> tuple:
+        """将 resource_type 解析为 (api_version, kind)，用于动态 API"""
+        rt = resource_type.lower().strip()
+        kind = self._resource_type_to_kind.get(rt)
+        if kind:
+            api_version = self._api_version_map.get(kind, "v1")
+            return (api_version, kind)
+        # 从集群发现中查找（支持 CRD 等任意资源）
+        for r in self._dynamic_service.list_available_resources():
+            if r["name"].lower() == rt or r["kind"].lower() == rt:
+                return (r["group_version"], r["kind"])
+        raise ValueError(f"无法解析资源类型: {resource_type}，请使用 batch_list_resources(resource_types='all') 查看可用资源")
+
+    def list_available_api_resources(self) -> List[Dict[str, Any]]:
+        """列出集群中所有可发现的 API 资源"""
+        return self._dynamic_service.list_available_resources()
+
     async def batch_list_resources(self, resource_types: List[str], namespace: str = "default") -> Dict:
         """批量查看资源"""
+        # 特殊值：列出集群中所有可用的 API 资源类型
+        if len(resource_types) == 1 and resource_types[0].lower() in ("all", "__all__", "__discover__"):
+            try:
+                resources = self.list_available_api_resources()
+                return {
+                    "success": [{"resource_type": "__discover__", "available_resources": resources, "count": len(resources)}],
+                    "failed": [],
+                    "total": 1
+                }
+            except Exception as e:
+                return {"success": [], "failed": [{"resource_type": "__discover__", "error": str(e)}], "total": 1}
+
         results = {"success": [], "failed": [], "total": len(resource_types)}
         
         for resource_type in resource_types:
             try:
                 resource_type = resource_type.lower()
-                operation_func = self._get_resource_operation(resource_type, "list", namespace)
-                result = await operation_func()
+                try:
+                    operation_func = self._get_resource_operation(resource_type, "list", namespace)
+                    result = await operation_func()
+                except ValueError:
+                    # 不在预定义映射中，尝试动态 API
+                    api_version, kind = self._resolve_to_api_version_kind(resource_type)
+                    result = self._dynamic_service.list_resources(api_version, kind, namespace)
                 
                 results["success"].append({
                     "resource_type": resource_type,
@@ -992,13 +1048,14 @@ class KubernetesAdvancedService:
             try:
                 kind = spec["kind"]
                 name = spec["name"]
+                api_version = spec.get("apiVersion") or self._api_version_map.get(kind, "v1")
                 
-                # 将 kind 转换为资源类型
-                resource_type = self._kind_to_resource_type(kind)
-                
-                # 获取资源详细信息
-                operation_func = self._get_resource_operation(resource_type, "get", namespace)
-                result = await operation_func(name)
+                try:
+                    resource_type = self._kind_to_resource_type(kind)
+                    operation_func = self._get_resource_operation(resource_type, "get", namespace)
+                    result = await operation_func(name)
+                except ValueError:
+                    result = self._dynamic_service.get_resource(api_version, kind, name, namespace)
                 
                 results["success"].append({
                     "kind": kind,
@@ -1060,9 +1117,12 @@ class KubernetesAdvancedService:
             resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
             try:
-                # 直接调用k8s_api_service的方法，验证功能已集成在其中
-                operation_func = self._get_resource_operation(resource_type, "create", namespace)
-                result = await operation_func(resource)
+                try:
+                    operation_func = self._get_resource_operation(resource_type, "create", namespace)
+                    result = await operation_func(resource)
+                except ValueError:
+                    # 不在预定义映射中，使用动态 API
+                    result = self._dynamic_service.create_resource(resource, namespace)
                 results["success"].append({
                     "name": resource_name,
                     "kind": resource_type,
@@ -1089,9 +1149,11 @@ class KubernetesAdvancedService:
             resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
             try:
-                # 直接调用k8s_api_service的方法，验证功能已集成在其中
-                operation_func = self._get_resource_operation(resource_type, "update", namespace)
-                result = await operation_func(resource_name, resource)
+                try:
+                    operation_func = self._get_resource_operation(resource_type, "update", namespace)
+                    result = await operation_func(resource_name, resource)
+                except ValueError:
+                    result = self._dynamic_service.update_resource(resource, namespace)
                 results["success"].append({
                     "name": resource_name,
                     "kind": resource_type,
@@ -1119,9 +1181,15 @@ class KubernetesAdvancedService:
             resource_name = resource.get("metadata", {}).get("name", "unknown")
                 
             try:
-                # 直接调用k8s_api_service的方法，验证功能已集成在其中
-                operation_func = self._get_resource_operation(resource_type, "delete", namespace)
-                result = await operation_func(resource_name, grace_period_seconds)
+                try:
+                    operation_func = self._get_resource_operation(resource_type, "delete", namespace)
+                    result = await operation_func(resource_name, grace_period_seconds)
+                except ValueError:
+                    kind = resource.get("kind", "Unknown")
+                    api_version = resource.get("apiVersion") or self._api_version_map.get(kind, "v1")
+                    result = self._dynamic_service.delete_resource(
+                        api_version, kind, resource_name, namespace, grace_period_seconds
+                    )
                 results["success"].append({
                     "name": resource_name,
                     "kind": resource_type,
@@ -1136,7 +1204,7 @@ class KubernetesAdvancedService:
         
         print(f"✅ 批量删除完成: {len(results['success'])} 成功, {len(results['failed'])} 失败\n")
         return results
-
+    
     # ==================== 备份恢复相关方法 ====================
     
     def _get_backup_path(self, cluster_name: str, namespace: str = None, 

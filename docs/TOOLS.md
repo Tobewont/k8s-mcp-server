@@ -1,5 +1,16 @@
 # k8s-mcp-server 工具清单（36 个）
 
+## Service 层与动态资源支持
+
+批量操作工具（batch_list/create/update/delete/describe）采用**双层服务**：
+
+- **k8s_api_service**：强类型 API，处理内置资源（Deployment、Service、ConfigMap 等）
+- **dynamic_resource_service**：DynamicClient，处理任意资源（含 CRD，如 CephFilesystem、KafkaTopic）
+
+未在预定义映射中的资源类型会自动 fallback 到 `dynamic_resource_service`，无需为每个 CRD 单独实现。使用 `batch_list_resources(resource_types="all")` 可列出集群所有可发现的 API 资源类型。
+
+---
+
 ## 一、核心工具 (k8s_tools.py) - 4 个
 
 
@@ -52,7 +63,9 @@
 
 ## 四、批量操作 (batch_tools.py) - 6 个
 
-支持资源类型：deployments, statefulsets, daemonsets, services, configmaps, secrets, jobs, cronjobs, ingresses, persistentvolumeclaims, serviceaccounts, roles, rolebindings, horizontalpodautoscalers, networkpolicies, resourcequotas, **namespaces, pods, nodes** 等。
+**支持集群中所有可发现的 API 资源**（含 CRD）。`resource_types="all"` 可列出集群所有可用资源类型。
+
+内置支持：deployments, statefulsets, daemonsets, services, configmaps, secrets, jobs, cronjobs, ingresses, persistentvolumeclaims, serviceaccounts, roles, rolebindings, horizontalpodautoscalers, networkpolicies, resourcequotas, namespaces, pods, nodes, storageclasses, clusterroles, clusterrolebindings 等；未知类型通过 DynamicClient 自动发现并操作。
 
 
 | 工具名                        | 作用                                          |

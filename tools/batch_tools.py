@@ -18,7 +18,7 @@ async def batch_list_resources(resource_types: str, namespace: str = "default") 
     """批量查看资源
     
     Args:
-        resource_types: JSON格式的资源类型列表或单个资源类型
+        resource_types: 资源类型，支持：1) "all" 列出集群所有可用 API 资源类型；2) JSON 数组如 ["pods","deployments"]；3) 单个类型如 "pods"。支持任意集群内可发现的资源（含 CRD）
         namespace: 命名空间
     
     Returns:

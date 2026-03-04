@@ -110,7 +110,8 @@ k8s-mcp-server/
 ├── services/
 │   ├── __init__.py
 │   ├── k8s_api_service.py       # Kubernetes API 服务层
-│   └── k8s_advanced_service.py  # Kubernetes 进阶服务层（批量操作、备份恢复、RBAC、验证）
+│   ├── k8s_advanced_service.py  # Kubernetes 进阶服务层（批量操作、备份恢复、RBAC、验证）
+│   └── dynamic_resource_service.py  # 动态资源服务（DynamicClient，支持集群所有 API 资源及 CRD）
 ├── tools/
 │   ├── __init__.py              # FastMCP 实例和工具模块导入
 │   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (4个工具)
@@ -141,9 +142,21 @@ k8s-mcp-server/
 └── pyproject.toml               # 依赖列表
 ```
 
+### Service 层架构
+
+服务层采用三层设计，职责分离、便于扩展：
+
+| 服务 | 文件 | 角色 | 实现方式 | 覆盖范围 |
+|------|------|------|----------|----------|
+| **KubernetesAPIService** | k8s_api_service.py | 底层 API 封装 | 强类型 API（V1Api、AppsV1Api 等） | 内置资源（Pod、Deployment、Service 等） |
+| **DynamicResourceService** | dynamic_resource_service.py | 动态资源操作 | DynamicClient，运行时发现 API | 任意资源（内置 + CRD + 未来新增） |
+| **KubernetesAdvancedService** | k8s_advanced_service.py | 编排与业务层 | 组合上述两者 | 批量操作、备份恢复、验证等 |
+
+**调用策略**：批量操作时优先使用预定义方法，若资源类型未命中则 fallback 到 `DynamicResourceService`，从而支持 CephFilesystem、KafkaTopic 等 CRD 及集群中所有可发现的 API 资源。
+
 ### 架构特点
 
-1. **Service 层**：`KubernetesAPIService` 封装所有 Kubernetes API 操作
+1. **Service 层**：三层架构（API 层 + 动态层 + 编排层），内置资源与 CRD 统一入口
 2. **Tool 层**：使用 `@mcp.tool` 装饰器定义 MCP 工具函数
 3. **统一 MCP 实例**：所有工具共享同一个 FastMCP 实例
 4. **双重传输**：同时支持 SSE 和 stdio 两种传输方式
@@ -160,7 +173,7 @@ k8s-mcp-server/
 | 核心工具 | k8s_tools | 4 | 集群信息、Pod 日志、执行命令、端口转发 |
 | 集群管理 | cluster_tools | 13 | 集群导入/切换、kubeconfig 管理 |
 | 诊断工具 | diagnostic_tools | 5 | 集群/节点/Pod 健康、资源使用、事件 |
-| 批量操作 | batch_tools | 6 | 批量增删改查、重启资源 |
+| 批量操作 | batch_tools | 6 | 批量增删改查、重启资源；支持集群所有 API 资源（含 CRD），`resource_types="all"` 可发现可用资源 |
 | 备份恢复 | backup_tools | 4 | 命名空间/资源备份与恢复 |
 | RBAC 管理 | rbac_tools | 4 | 角色模板、权限分析、冲突检查 |
 
@@ -169,7 +182,7 @@ k8s-mcp-server/
 ### K8s 资源管理 (batch_tools.py)
 
 #### 批量操作工具
-- `batch_list_resources()` - 批量查询资源
+- `batch_list_resources()` - 批量查询资源；`resource_types="all"` 可列出集群所有可用 API 资源类型
 - `batch_create_resources()` - 批量创建资源（支持事务回滚）
 - `batch_update_resources()` - 批量更新资源
 - `batch_delete_resources()` - 批量删除资源
@@ -211,6 +224,8 @@ k8s-mcp-server/
 - `get_cluster_events()` - 获取集群事件
 
 #### 支持的批量操作资源类型
+
+**支持集群中所有可发现的 API 资源**（含 CRD）。以下为内置优化类型，其他类型通过 DynamicClient 自动发现并操作。
 
 **工作负载资源**：
 - Deployment - 部署管理
