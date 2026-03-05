@@ -325,3 +325,57 @@ async def batch_restart_resources(resources: str, namespace: str = "default") ->
         
     except Exception as e:
         return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def batch_rollout_resources(operations: str, namespace: str = "default") -> str:
+    """批量发布操作：查看状态、回滚、暂停、恢复
+    
+    Args:
+        operations: JSON 数组，每项格式 {"kind":"Deployment","name":"xxx","action":"status|undo|pause|resume","revision":3}
+            action: status 查看发布状态, undo 回滚(不指定 revision 则回滚到上一版本, 指定 revision 则回滚到该版本), pause 暂停(仅Deployment), resume 恢复(仅Deployment)
+        namespace: 命名空间
+    
+    Returns:
+        批量操作结果
+    """
+    try:
+        if isinstance(operations, str):
+            ops_list = json.loads(operations)
+        else:
+            ops_list = operations
+        if not isinstance(ops_list, list):
+            ops_list = [ops_list]
+        service = KubernetesAdvancedService()
+        result = await service.batch_rollout_resources(ops_list, namespace)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def batch_top_resources(resource_types: str, namespace: str = "default") -> str:
+    """批量查看 Node/Pod 的 CPU、内存使用（类似 kubectl top）
+    
+    Args:
+        resource_types: 资源类型，JSON 数组如 ["nodes","pods"] 或 "nodes" 或 "pods"
+        namespace: 命名空间（仅对 pods 有效）
+    
+    Returns:
+        nodes 和/或 pods 的 CPU、内存使用数据。依赖集群已部署 metrics-server。
+    """
+    try:
+        if isinstance(resource_types, str):
+            try:
+                types_list = json.loads(resource_types)
+            except json.JSONDecodeError:
+                types_list = [resource_types]
+        else:
+            types_list = resource_types
+        if not isinstance(types_list, list):
+            types_list = [types_list]
+        service = KubernetesAdvancedService()
+        result = await service.batch_top_resources(types_list, namespace)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)

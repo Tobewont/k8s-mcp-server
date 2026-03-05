@@ -152,6 +152,47 @@ async def check_node_health(node_name: str = None, kubeconfig_path: str = None) 
         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 @mcp.tool()
+async def drain_node(node_name: str, ignore_daemonset: bool = True,
+                     ignore_mirror_pods: bool = True, kubeconfig_path: str = None) -> str:
+    """
+    节点排水（drain）：将节点设为不可调度并驱逐该节点上的 Pod
+    
+    等同于 kubectl drain <node_name>，会跳过 DaemonSet Pod、mirror pod 和无控制器的 Pod。
+    
+    Args:
+        node_name: 节点名称
+        ignore_daemonset: 是否跳过 DaemonSet Pod，默认 True
+        ignore_mirror_pods: 是否跳过 mirror pod（静态 Pod 镜像），默认 True
+        kubeconfig_path: kubeconfig 文件路径
+    
+    Returns:
+        排水结果（已驱逐、已跳过、失败的 Pod 列表）
+    """
+    try:
+        from utils.operations_logger import log_operation
+        k8s_service = KubernetesAPIService()
+        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+        
+        result = await k8s_service.drain_node(
+            node_name=node_name,
+            ignore_daemonset=ignore_daemonset,
+            ignore_mirror_pods=ignore_mirror_pods
+        )
+        
+        log_operation("drain_node", "drain", {
+            "node": node_name,
+            "evicted": len(result["evicted"]),
+            "skipped": len(result["skipped"]),
+            "failed": len(result["failed"])
+        }, len(result["failed"]) == 0)
+        
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        error_result = {"success": False, "error": str(e)}
+        return json.dumps(error_result, ensure_ascii=False, indent=2)
+
+@mcp.tool()
 async def check_pod_health(pod_name: str = None, namespace: str = "default", 
                      kubeconfig_path: str = None, only_failed: bool = False) -> str:
     """
