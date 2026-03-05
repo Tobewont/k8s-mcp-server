@@ -9,7 +9,7 @@
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
-- **全面的 K8s 操作**：支持 36 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **全面的 K8s 操作**：支持 40 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
 - **双重传输协议**：同时支持 SSE 和 Stdio 两种传输方式
@@ -83,7 +83,7 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 }
 ```
 
-配置后重启 Cursor 或执行 **Developer: Reload Window**，即可在 MCP 工具列表中看到 36 个工具。
+配置后重启 Cursor 或执行 **Developer: Reload Window**，即可在 MCP 工具列表中看到 40 个工具。
 
 ### 容器化部署
 
@@ -114,10 +114,10 @@ k8s-mcp-server/
 │   └── dynamic_resource_service.py  # 动态资源服务（DynamicClient，支持集群所有 API 资源及 CRD）
 ├── tools/
 │   ├── __init__.py              # FastMCP 实例和工具模块导入
-│   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (4个工具)
+│   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (5个工具)
 │   ├── cluster_tools.py         # 多集群配置管理 (13个工具)
-│   ├── diagnostic_tools.py      # 集群诊断工具 (5个工具)
-│   ├── batch_tools.py           # 批量操作工具 (6个工具)
+│   ├── diagnostic_tools.py      # 集群诊断工具 (6个工具)
+│   ├── batch_tools.py           # 批量操作工具 (8个工具)
 │   ├── backup_tools.py          # 备份恢复工具 (4个工具)
 │   └── rbac_tools.py            # RBAC管理工具 (4个工具)
 ├── utils/
@@ -134,7 +134,8 @@ k8s-mcp-server/
 │   └── README.md                # 部署指南
 ├── data/
 │   ├── clusters.json            # 集群配置存储
-│   └── kubeconfigs/             # kubeconfig 文件存储目录
+│   ├── kubeconfigs/             # kubeconfig 文件存储目录
+│   └── copyfiles/               # Pod 文件拷贝本地保存目录
 ├── Dockerfile                   # 容器镜像构建文件
 ├── .dockerignore                # Docker 构建排除文件
 ├── config.py                    # 服务配置
@@ -170,10 +171,10 @@ k8s-mcp-server/
 
 | 分类 | 模块 | 工具数 | 说明 |
 |------|------|--------|------|
-| 核心工具 | k8s_tools | 4 | 集群信息、Pod 日志、执行命令、端口转发 |
+| 核心工具 | k8s_tools | 5 | 集群信息、Pod 日志（含 previous）、执行命令、Pod 文件拷贝、端口转发 |
 | 集群管理 | cluster_tools | 13 | 集群导入/切换、kubeconfig 管理 |
-| 诊断工具 | diagnostic_tools | 5 | 集群/节点/Pod 健康、资源使用、事件 |
-| 批量操作 | batch_tools | 6 | 批量增删改查、重启资源；支持集群所有 API 资源（含 CRD），`resource_types="all"` 可发现可用资源 |
+| 诊断工具 | diagnostic_tools | 6 | 集群/节点/Pod 健康、资源使用、事件、节点排水 |
+| 批量操作 | batch_tools | 8 | 批量增删改查、重启、发布操作、top 资源；支持集群所有 API 资源（含 CRD），`resource_types="all"` 可发现可用资源 |
 | 备份恢复 | backup_tools | 4 | 命名空间/资源备份与恢复 |
 | RBAC 管理 | rbac_tools | 4 | 角色模板、权限分析、冲突检查 |
 
@@ -188,6 +189,8 @@ k8s-mcp-server/
 - `batch_delete_resources()` - 批量删除资源
 - `batch_describe_resources()` - 批量获取资源详细信息
 - `batch_restart_resources()` - 批量重启资源（Deployment、StatefulSet、DaemonSet）
+- `batch_rollout_resources()` - 批量发布操作：status 查看状态、undo 回滚（支持指定 revision）、pause 暂停、resume 恢复
+- `batch_top_resources()` - 批量查看 Node/Pod 的 CPU、内存使用（类似 kubectl top，依赖 metrics-server）
 
 ### 核心工具 (k8s_tools.py)
 
@@ -195,7 +198,8 @@ k8s-mcp-server/
 - `get_cluster_info()` - 获取集群信息
 
 #### Pod 操作工具
-- `get_pod_logs()` - 获取 Pod 日志
+- `get_pod_logs()` - 获取 Pod 日志（支持 `previous` 获取上一实例日志）
+- `copy_pod_file()` - Pod 与本地双向拷贝文件/目录，本地默认保存到 `data/copyfiles`
 - `exec_pod_command()` - 在 Pod 中执行命令
 - `port_forward()` - 配置端口转发到 Pod
 
@@ -222,6 +226,7 @@ k8s-mcp-server/
 - `check_pod_health()` - 检查Pod健康状态（支持筛选失败Pod）
 - `get_cluster_resource_usage()` - 获取集群资源使用情况（支持指定命名空间）
 - `get_cluster_events()` - 获取集群事件
+- `drain_node()` - 节点排水（cordon + 驱逐 Pod，跳过 DaemonSet/mirror pod）
 
 #### 支持的批量操作资源类型
 
@@ -312,6 +317,9 @@ k8s-mcp-server/
 - **数据持久化**：支持配置和数据的持久化存储
 - **健康检查**：提供容器健康检查端点
 - **批量资源操作**：支持批量创建、更新、删除多个资源，支持事务回滚
+- **发布管理**：支持 Deployment/StatefulSet/DaemonSet 的 status、undo（含指定 revision）、pause、resume
+- **资源监控**：`batch_top_resources` 查看 Node/Pod 的 CPU、内存使用（依赖 metrics-server）
+- **Pod 文件拷贝**：`copy_pod_file` 支持 Pod 与本地双向拷贝，本地保存至 `data/copyfiles`
 - **备份恢复**：支持命名空间和单个资源的备份恢复，按集群/命名空间/资源类型层级存储
 - **RBAC管理**：完整的角色和权限管理，支持角色模板和用户绑定
 - **变更验证预览**：自动验证所有写操作并显示具体变更内容，提供详细的操作预览

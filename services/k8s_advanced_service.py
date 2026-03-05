@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable
 from services.k8s_api_service import KubernetesAPIService
 from services.dynamic_resource_service import DynamicResourceService
-from config import DATA_DIR, BACKUP_DIR_NAME
+from config import DATA_DIR, BACKUP_DIR
 
 
 class ResourceManager:
@@ -105,7 +105,7 @@ class KubernetesAdvancedService:
     def __init__(self):
         self.k8s_service = KubernetesAPIService()
         self.k8s_service.load_config()
-        self.backup_dir = os.path.join(DATA_DIR, BACKUP_DIR_NAME)
+        self.backup_dir = BACKUP_DIR
         os.makedirs(self.backup_dir, exist_ok=True)
         self.operation_history = []
         
@@ -1167,6 +1167,47 @@ class KubernetesAdvancedService:
                 })
         
         print(f"✅ 批量更新完成: {len(results['success'])} 成功, {len(results['failed'])} 失败\n")
+        return results
+    
+    async def batch_rollout_resources(self, operations: List[Dict], namespace: str = "default") -> Dict:
+        """批量发布操作：status 查看状态、undo 回滚、pause 暂停、resume 恢复"""
+        results = {"success": [], "failed": [], "total": len(operations)}
+        supported_kinds = ["deployment", "statefulset", "daemonset"]
+        for op in operations:
+            kind = (op.get("kind") or "").lower()
+            name = op.get("name", "")
+            action = (op.get("action") or "status").lower()
+            ns = op.get("namespace") or namespace
+            try:
+                if kind not in supported_kinds:
+                    raise ValueError(f"不支持的资源类型: {kind}")
+                if not name:
+                    raise ValueError("必须指定 name")
+                if action == "status":
+                    result = await self.k8s_service.rollout_status(kind, name, ns)
+                elif action == "undo":
+                    result = await self.k8s_service.rollout_undo(kind, name, ns, op.get("revision"))
+                elif action == "pause":
+                    result = await self.k8s_service.rollout_pause(kind, name, ns)
+                elif action == "resume":
+                    result = await self.k8s_service.rollout_resume(kind, name, ns)
+                else:
+                    raise ValueError(f"不支持的操作: {action}，支持 status/undo/pause/resume")
+                results["success"].append({"kind": kind, "name": name, "action": action, "result": result})
+            except Exception as e:
+                results["failed"].append({"kind": kind, "name": name, "action": action, "error": str(e)})
+        return results
+
+    async def batch_top_resources(self, resource_types: List[str], namespace: str = "default") -> Dict:
+        """批量获取 Node/Pod 的 CPU、内存使用（依赖 metrics-server）"""
+        results = {"nodes": [], "pods": [], "error": None}
+        try:
+            if "nodes" in resource_types or "node" in resource_types:
+                results["nodes"] = await self.k8s_service.get_node_metrics()
+            if "pods" in resource_types or "pod" in resource_types:
+                results["pods"] = await self.k8s_service.get_pod_metrics(namespace)
+        except Exception as e:
+            results["error"] = str(e)
         return results
     
     async def batch_delete_resources(self, resources: List[Dict], namespace: str = "default", 

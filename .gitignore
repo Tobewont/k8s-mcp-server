@@ -121,6 +121,9 @@ config.local.py
 # 本地备份文件
 data/backup/
 
+# 本地拷贝文件
+data/copyfiles/
+
 # cursor
 .cursorindexingignore
 .specstory

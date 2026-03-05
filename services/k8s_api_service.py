@@ -593,8 +593,9 @@ class KubernetesAPIService:
 
     async def get_pod_logs(self, name: str, namespace: str = "default", 
                      container: str = None, lines: int = 100, 
-                     since_seconds: int = None, follow: bool = False) -> str:
-        """获取 Pod 日志"""
+                     since_seconds: int = None, follow: bool = False,
+                     previous: bool = False) -> str:
+        """获取 Pod 日志，previous=True 时获取上一实例（崩溃容器）的日志"""
         try:
             logs = self.v1_api.read_namespaced_pod_log(
                 name=name,
@@ -602,7 +603,8 @@ class KubernetesAPIService:
                 container=container,
                 tail_lines=lines,
                 since_seconds=since_seconds,
-                follow=follow
+                follow=follow,
+                previous=previous
             )
             return logs
             
@@ -984,6 +986,161 @@ class KubernetesAPIService:
         return await self._execute_with_validation_and_preview(
             "delete", "deployment", name, namespace, None, delete_operation
         )
+
+    async def rollout_status(self, kind: str, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """获取 Deployment/StatefulSet/DaemonSet 发布状态"""
+        try:
+            kind = kind.lower()
+            if kind == "deployment":
+                obj = self.apps_v1_api.read_namespaced_deployment_status(name=name, namespace=namespace)
+                return {
+                    "kind": "Deployment",
+                    "name": name,
+                    "namespace": namespace,
+                    "replicas": obj.spec.replicas,
+                    "ready_replicas": obj.status.ready_replicas or 0,
+                    "updated_replicas": obj.status.updated_replicas or 0,
+                    "available_replicas": obj.status.available_replicas or 0,
+                    "paused": getattr(obj.spec, "paused", False) or False,
+                    "conditions": [
+                        {"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                        for c in (obj.status.conditions or [])
+                    ]
+                }
+            elif kind == "statefulset":
+                obj = self.apps_v1_api.read_namespaced_stateful_set_status(name=name, namespace=namespace)
+                return {
+                    "kind": "StatefulSet",
+                    "name": name,
+                    "namespace": namespace,
+                    "replicas": obj.spec.replicas,
+                    "ready_replicas": obj.status.ready_replicas or 0,
+                    "current_replicas": obj.status.current_replicas or 0,
+                    "updated_replicas": obj.status.updated_replicas or 0,
+                    "conditions": [
+                        {"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                        for c in (obj.status.conditions or [])
+                    ]
+                }
+            elif kind == "daemonset":
+                obj = self.apps_v1_api.read_namespaced_daemon_set_status(name=name, namespace=namespace)
+                return {
+                    "kind": "DaemonSet",
+                    "name": name,
+                    "namespace": namespace,
+                    "desired_number_scheduled": obj.status.desired_number_scheduled or 0,
+                    "current_number_scheduled": obj.status.current_number_scheduled or 0,
+                    "number_ready": obj.status.number_ready or 0,
+                    "updated_number_scheduled": obj.status.updated_number_scheduled or 0,
+                    "conditions": [
+                        {"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                        for c in (obj.status.conditions or [])
+                    ]
+                }
+            else:
+                raise ValueError(f"不支持的资源类型: {kind}，支持 Deployment/StatefulSet/DaemonSet")
+        except ApiException as e:
+            raise Exception(f"获取发布状态失败: {e.reason}")
+
+    async def rollout_undo(self, kind: str, name: str, namespace: str = "default",
+                          revision: int = None) -> Dict[str, Any]:
+        """回滚 Deployment/StatefulSet/DaemonSet 到上一版本"""
+        try:
+            kind = kind.lower()
+            if kind == "deployment":
+                deployment = self.apps_v1_api.read_namespaced_deployment(name=name, namespace=namespace)
+                label_selector = ",".join(f"{k}={v}" for k, v in (deployment.spec.selector.match_labels or {}).items())
+                rs_list = self.apps_v1_api.list_namespaced_replica_set(
+                    namespace=namespace, label_selector=label_selector
+                )
+                def _rev_key(r):
+                    rev = r.metadata.annotations.get("deployment.kubernetes.io/revision", "0")
+                    return int(rev) if str(rev).isdigit() else 0
+                rs_sorted = sorted(rs_list.items, key=_rev_key, reverse=True)
+                if revision is not None:
+                    target_rs = next((r for r in rs_sorted if _rev_key(r) == revision), None)
+                    if not target_rs:
+                        raise Exception(f"未找到 revision {revision}")
+                    prev_rs = target_rs
+                elif len(rs_sorted) < 2:
+                    raise Exception("没有可回滚的版本")
+                else:
+                    prev_rs = rs_sorted[1]
+                template = prev_rs.spec.template
+                api_client = self.apps_v1_api.api_client
+                template_dict = api_client.sanitize_for_serialization(template) if template else {}
+                if not template_dict:
+                    raise Exception("无法获取上一版本的 Pod 模板")
+                if isinstance(template_dict.get("metadata", {}).get("labels"), dict):
+                    template_dict["metadata"]["labels"].pop("pod-template-hash", None)
+                patch = [{"op": "replace", "path": "/spec/template", "value": template_dict}]
+                self.apps_v1_api.patch_namespaced_deployment(name=name, namespace=namespace, body=patch)
+                return {"kind": "Deployment", "name": name, "namespace": namespace, "status": "rolled_back"}
+            elif kind == "statefulset":
+                sts = self.apps_v1_api.read_namespaced_stateful_set(name=name, namespace=namespace)
+                revisions = self.apps_v1_api.list_namespaced_controller_revision(
+                    namespace=namespace,
+                    label_selector=f"controller.kubernetes.io/name={name}"
+                )
+                rev_sorted = sorted(revisions.items, key=lambda r: getattr(r, "revision", 0) or 0, reverse=True)
+                if len(rev_sorted) < 2:
+                    raise Exception("没有可回滚的版本")
+                prev_rev = rev_sorted[1]
+                rev_data = prev_rev.data if hasattr(prev_rev, "data") else {}
+                if isinstance(rev_data, dict):
+                    template = rev_data.get("spec", {}).get("template") or rev_data.get("template")
+                else:
+                    template = getattr(getattr(rev_data, "spec", None), "template", None) or getattr(rev_data, "template", None)
+                if not template:
+                    raise Exception("无法解析上一版本的模板")
+                patch = {"spec": {"template": template}}
+                self.apps_v1_api.patch_namespaced_stateful_set(name=name, namespace=namespace, body=patch)
+                return {"kind": "StatefulSet", "name": name, "namespace": namespace, "status": "rolled_back"}
+            elif kind == "daemonset":
+                revisions = self.apps_v1_api.list_namespaced_controller_revision(
+                    namespace=namespace,
+                    label_selector=f"controller.kubernetes.io/name={name}"
+                )
+                rev_sorted = sorted(revisions.items, key=lambda r: getattr(r, "revision", 0) or 0, reverse=True)
+                if len(rev_sorted) < 2:
+                    raise Exception("没有可回滚的版本")
+                prev_rev = rev_sorted[1]
+                rev_data = prev_rev.data if hasattr(prev_rev, "data") else {}
+                if isinstance(rev_data, dict):
+                    template = rev_data.get("spec", {}).get("template") or rev_data.get("template")
+                else:
+                    template = getattr(getattr(rev_data, "spec", None), "template", None) or getattr(rev_data, "template", None)
+                if not template:
+                    raise Exception("无法解析上一版本的模板")
+                patch = {"spec": {"template": template}}
+                self.apps_v1_api.patch_namespaced_daemon_set(name=name, namespace=namespace, body=patch)
+                return {"kind": "DaemonSet", "name": name, "namespace": namespace, "status": "rolled_back"}
+            else:
+                raise ValueError(f"不支持的资源类型: {kind}")
+        except ApiException as e:
+            raise Exception(f"回滚失败: {e.reason}")
+
+    async def rollout_pause(self, kind: str, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """暂停 Deployment 发布（仅 Deployment 支持）"""
+        if kind.lower() != "deployment":
+            raise ValueError("仅 Deployment 支持暂停发布")
+        try:
+            patch = {"spec": {"paused": True}}
+            self.apps_v1_api.patch_namespaced_deployment(name=name, namespace=namespace, body=patch)
+            return {"kind": "Deployment", "name": name, "namespace": namespace, "status": "paused"}
+        except ApiException as e:
+            raise Exception(f"暂停发布失败: {e.reason}")
+
+    async def rollout_resume(self, kind: str, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """恢复 Deployment 发布（仅 Deployment 支持）"""
+        if kind.lower() != "deployment":
+            raise ValueError("仅 Deployment 支持恢复发布")
+        try:
+            patch = {"spec": {"paused": False}}
+            self.apps_v1_api.patch_namespaced_deployment(name=name, namespace=namespace, body=patch)
+            return {"kind": "Deployment", "name": name, "namespace": namespace, "status": "resumed"}
+        except ApiException as e:
+            raise Exception(f"恢复发布失败: {e.reason}")
 
     # ========================== StatefulSet 服务层方法 ==========================
 
@@ -6282,6 +6439,91 @@ class KubernetesAPIService:
         except Exception as e:
             raise Exception(f"执行Pod命令失败: {str(e)}")
 
+    async def copy_from_pod(self, pod_name: str, pod_path: str, local_path: str,
+                            namespace: str = "default", container: str = None) -> str:
+        """从 Pod 拷贝文件/目录到本地（使用 tar + stream，需 Pod 内有 tar）"""
+        import os
+        import tarfile
+        import asyncio
+        from io import BytesIO
+        from kubernetes.stream import stream
+
+        def _do_copy():
+            parent = os.path.dirname(pod_path)
+            base = os.path.basename(pod_path)
+            if not parent:
+                parent = "."
+            cmd = ['tar', 'cf', '-', '-C', parent, base]
+            resp = stream(
+                self.v1_api.connect_get_namespaced_pod_exec,
+                pod_name, namespace,
+                command=cmd,
+                container=container,
+                stderr=True, stdin=False, stdout=True, tty=False,
+                _preload_content=False,
+                binary=True
+            )
+            tar_data = BytesIO()
+            while resp.is_open():
+                resp.update(timeout=2)
+                if resp.peek_stdout():
+                    out = resp.read_stdout()
+                    if isinstance(out, str):
+                        out = out.encode('latin1')
+                    tar_data.write(out)
+            resp.close()
+            tar_data.seek(0)
+            # 解压到 local_path 的父目录，使 tar 内的 base 目录（如 apt）落在 local_path 下
+            # 例如 pod /var/log/apt -> tar 含 apt/<files>，解压到 dirname(local_path) 得到 local_path/<files>
+            dest_dir = os.path.dirname(local_path) or "."
+            os.makedirs(dest_dir, exist_ok=True)
+            with tarfile.open(fileobj=tar_data, mode='r:') as tar:
+                tar.extractall(path=dest_dir)
+            return local_path
+
+        await asyncio.to_thread(_do_copy)
+        return local_path
+
+    async def copy_to_pod(self, pod_name: str, local_path: str, pod_path: str,
+                          namespace: str = "default", container: str = None) -> str:
+        """从本地拷贝文件/目录到 Pod（使用 tar + stream，需 Pod 内有 tar）"""
+        import os
+        import tarfile
+        import asyncio
+        from io import BytesIO
+        from kubernetes.stream import stream
+
+        def _do_copy():
+            if not os.path.exists(local_path):
+                raise FileNotFoundError(f"本地路径不存在: {local_path}")
+            tar_buffer = BytesIO()
+            arcname = os.path.basename(pod_path.rstrip('/')) or os.path.basename(local_path)
+            with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+                tar.add(local_path, arcname=arcname)
+            tar_buffer.seek(0)
+            tar_bytes = tar_buffer.read()
+            dest_dir = os.path.dirname(pod_path)
+            if not dest_dir:
+                dest_dir = "/"
+            cmd = ['tar', 'xf', '-', '-C', dest_dir]
+            resp = stream(
+                self.v1_api.connect_get_namespaced_pod_exec,
+                pod_name, namespace,
+                command=cmd,
+                container=container,
+                stderr=True, stdin=True, stdout=True, tty=False,
+                _preload_content=False,
+                binary=True
+            )
+            chunk_size = 1024 * 64
+            for i in range(0, len(tar_bytes), chunk_size):
+                resp.write_stdin(tar_bytes[i:i + chunk_size])
+            resp.close()
+            return pod_path
+
+        await asyncio.to_thread(_do_copy)
+        return pod_path
+
     async def port_forward(self, pod_name: str, local_port: int, pod_port: int,
                           namespace: str = "default") -> Dict[str, Any]:
         """Pod端口转发 - 在本地端口与Pod端口之间建立真实转发"""
@@ -6466,6 +6708,91 @@ class KubernetesAPIService:
             
         except ApiException as e:
             raise Exception(f"获取 Node 详情失败: {e.reason}")
+
+    async def evict_pod(self, name: str, namespace: str = "default",
+                        delete_options: client.V1DeleteOptions = None) -> Dict[str, Any]:
+        """驱逐 Pod（使用 Eviction API，尊重 PDB）"""
+        try:
+            body = client.V1Eviction(
+                metadata=client.V1ObjectMeta(name=name, namespace=namespace),
+                delete_options=delete_options
+            )
+            response = self.v1_api.create_namespaced_pod_eviction(
+                name=name, namespace=namespace, body=body
+            )
+            return {
+                "name": name,
+                "namespace": namespace,
+                "status": "evicted",
+                "message": getattr(response, "message", None) or "Eviction initiated"
+            }
+        except ApiException as e:
+            raise Exception(f"驱逐 Pod {namespace}/{name} 失败: {e.reason}")
+
+    async def drain_node(self, node_name: str, ignore_daemonset: bool = True,
+                         ignore_mirror_pods: bool = True) -> Dict[str, Any]:
+        """节点排水：cordon 后驱逐该节点上所有可驱逐的 Pod"""
+        try:
+            # 1. Cordon 节点
+            node = self.v1_api.read_node(name=node_name)
+            if not node.spec.unschedulable:
+                node.spec.unschedulable = True
+                self.v1_api.replace_node(name=node_name, body=node)
+
+            # 2. 列出该节点上的所有 Pod
+            pods = self.v1_api.list_pod_for_all_namespaces(
+                field_selector=f"spec.nodeName={node_name}"
+            )
+
+            evicted = []
+            skipped = []
+            failed = []
+
+            for pod in pods.items:
+                ns = pod.metadata.namespace
+                name = pod.metadata.name
+
+                # 跳过 DaemonSet Pod
+                if ignore_daemonset and pod.metadata.owner_references:
+                    if any(r.kind == "DaemonSet" for r in pod.metadata.owner_references):
+                        skipped.append({"name": name, "namespace": ns, "reason": "DaemonSet"})
+                        continue
+
+                # 跳过 mirror pod（静态 Pod 的镜像）
+                if ignore_mirror_pods and pod.metadata.annotations:
+                    if "kubernetes.io/config.mirror" in pod.metadata.annotations:
+                        skipped.append({"name": name, "namespace": ns, "reason": "mirror pod"})
+                        continue
+
+                # 跳过无控制器的 Pod（静态 Pod 等）
+                if not pod.metadata.owner_references or len(pod.metadata.owner_references) == 0:
+                    skipped.append({"name": name, "namespace": ns, "reason": "no controller"})
+                    continue
+
+                # 驱逐
+                try:
+                    body = client.V1Eviction(
+                        metadata=client.V1ObjectMeta(name=name, namespace=ns)
+                    )
+                    self.v1_api.create_namespaced_pod_eviction(name=name, namespace=ns, body=body)
+                    evicted.append({"name": name, "namespace": ns})
+                except ApiException as e:
+                    failed.append({"name": name, "namespace": ns, "error": str(e.reason)})
+
+            return {
+                "node": node_name,
+                "cordoned": True,
+                "evicted": evicted,
+                "skipped": skipped,
+                "failed": failed,
+                "summary": {
+                    "evicted_count": len(evicted),
+                    "skipped_count": len(skipped),
+                    "failed_count": len(failed)
+                }
+            }
+        except ApiException as e:
+            raise Exception(f"节点排水失败: {e.reason}")
 
     # ========================== Namespace 服务层方法 ==========================
 
@@ -6807,6 +7134,63 @@ class KubernetesAPIService:
             }
         except Exception as e:
             return {"error": str(e)}
+
+    async def get_node_metrics(self) -> List[Dict[str, Any]]:
+        """获取所有节点的 CPU、内存使用（依赖 metrics-server）"""
+        try:
+            co_api = client.CustomObjectsApi(self._api_client)
+            resp = co_api.list_cluster_custom_object("metrics.k8s.io", "v1beta1", "nodes")
+            items = resp.get("items", [])
+            result = []
+            for item in items:
+                meta = item.get("metadata", {})
+                usage = item.get("usage", {})
+                result.append({
+                    "name": meta.get("name", ""),
+                    "cpu": usage.get("cpu", "0"),
+                    "memory": usage.get("memory", "0"),
+                    "timestamp": item.get("timestamp", ""),
+                    "window": item.get("window", ""),
+                })
+            return result
+        except ApiException as e:
+            if e.status == 404 or "metrics.k8s.io" in str(e):
+                raise Exception("集群未部署 metrics-server，无法获取节点资源使用")
+            raise Exception(f"获取节点 metrics 失败: {str(e)}")
+
+    async def get_pod_metrics(self, namespace: str = "default") -> List[Dict[str, Any]]:
+        """获取指定命名空间下所有 Pod 的 CPU、内存使用（依赖 metrics-server）"""
+        try:
+            co_api = client.CustomObjectsApi(self._api_client)
+            resp = co_api.list_namespaced_custom_object(
+                "metrics.k8s.io", "v1beta1", namespace, "pods"
+            )
+            items = resp.get("items", [])
+            result = []
+            for item in items:
+                meta = item.get("metadata", {})
+                containers = item.get("containers", [])
+                container_list = [
+                    {"name": c.get("name", ""), "cpu": c.get("usage", {}).get("cpu", "0"),
+                     "memory": c.get("usage", {}).get("memory", "0")}
+                    for c in containers
+                ]
+                cpu = container_list[0]["cpu"] if container_list else "0"
+                memory = container_list[0]["memory"] if container_list else "0"
+                result.append({
+                    "name": meta.get("name", ""),
+                    "namespace": meta.get("namespace", namespace),
+                    "cpu": cpu,
+                    "memory": memory,
+                    "containers": container_list,
+                    "timestamp": item.get("timestamp", ""),
+                    "window": item.get("window", ""),
+                })
+            return result
+        except ApiException as e:
+            if e.status == 404 or "metrics.k8s.io" in str(e):
+                raise Exception("集群未部署 metrics-server，无法获取 Pod 资源使用")
+            raise Exception(f"获取 Pod metrics 失败: {str(e)}")
 
     def get_dynamic_client(self):
         """获取 DynamicClient，用于动态操作任意 API 资源"""

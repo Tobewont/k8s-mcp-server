@@ -1,4 +1,4 @@
-# k8s-mcp-server 工具清单（36 个）
+# k8s-mcp-server 工具清单（40 个）
 
 ## Service 层与动态资源支持
 
@@ -11,14 +11,15 @@
 
 ---
 
-## 一、核心工具 (k8s_tools.py) - 4 个
+## 一、核心工具 (k8s_tools.py) - 5 个
 
 
 | 工具名                | 作用                                |
 | ------------------ | --------------------------------- |
 | `get_cluster_info` | 获取 Kubernetes 集群信息（API 版本、服务器地址等） |
-| `get_pod_logs`     | 获取 Pod 日志，支持指定行数、容器               |
+| `get_pod_logs`     | 获取 Pod 日志，支持指定行数、容器、previous 上一实例 |
 | `exec_pod_command` | 在 Pod 内执行命令（如 `["ls", "-la"]`）    |
+| `copy_pod_file`    | Pod 与本地双向拷贝文件/目录，本地默认保存到 data/copyfiles（需 Pod 内有 tar） |
 | `port_forward`     | 将本地端口转发到 Pod 端口                   |
 
 
@@ -47,7 +48,7 @@
 
 ---
 
-## 三、诊断工具 (diagnostic_tools.py) - 5 个
+## 三、诊断工具 (diagnostic_tools.py) - 6 个
 
 
 | 工具名                          | 作用                                  |
@@ -57,11 +58,12 @@
 | `check_pod_health`           | 检查 Pod 健康，支持 `only_failed` 筛选异常 Pod |
 | `get_cluster_resource_usage` | 获取集群资源使用（CPU/内存、节点利用率等）             |
 | `get_cluster_events`         | 获取集群事件，支持按类型过滤和数量限制                 |
+| `drain_node`                 | 节点排水（cordon + 驱逐 Pod，跳过 DaemonSet/mirror pod） |
 
 
 ---
 
-## 四、批量操作 (batch_tools.py) - 6 个
+## 四、批量操作 (batch_tools.py) - 8 个
 
 **支持集群中所有可发现的 API 资源**（含 CRD）。`resource_types="all"` 可列出集群所有可用资源类型。
 
@@ -76,6 +78,8 @@
 | `batch_delete_resources`   | 批量删除资源，支持 `grace_period_seconds`            |
 | `batch_describe_resources` | 批量获取资源详情（如 `[{"kind":"Pod","name":"xxx"}]`） |
 | `batch_restart_resources`  | 批量重启 Deployment/StatefulSet/DaemonSet       |
+| `batch_rollout_resources`  | 批量发布操作：status 查看状态、undo 回滚（可指定 revision）、pause 暂停、resume 恢复 |
+| `batch_top_resources`      | 批量查看 Node/Pod 的 CPU、内存使用（类似 kubectl top，依赖 metrics-server） |
 
 
 ---
@@ -109,6 +113,9 @@
 ## 已覆盖的常见能力（通过 batch 工具）
 
 - **list_namespaces / list_nodes / list_pods** → `batch_list_resources` 传入 `["namespaces"]` / `["nodes"]` / `["pods"]`
+- **kubectl top nodes / kubectl top pods** → `batch_top_resources` 传入 `["nodes"]` / `["pods"]`
+- **kubectl rollout undo/status/pause/resume** → `batch_rollout_resources` 传入对应 action，undo 可带 `revision` 指定版本
+- **kubectl cp** → `copy_pod_file` 指定 direction 为 from_pod 或 to_pod
 - **create_namespace** → `batch_create_resources` 传入 Namespace 资源
 - **scale_deployment** → `batch_update_resources` 传入修改了 `spec.replicas` 的 Deployment
 - **get_pod_describe** → `batch_describe_resources` 传入 `[{"kind":"Pod","name":"xxx"}]`
