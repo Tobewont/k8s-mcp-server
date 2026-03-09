@@ -3,6 +3,7 @@
 使用 Kubernetes DynamicClient 发现和操作集群中所有可用的 API 资源
 支持 CRD、内置资源及未来新增资源
 """
+import asyncio
 from typing import Dict, List, Any, Optional
 from kubernetes.dynamic.resource import Resource
 
@@ -157,3 +158,22 @@ class DynamicResourceService:
             return {"status": "deleted", "name": name}
         except Exception as e:
             raise RuntimeError(f"删除 {kind}/{name} 失败: {e}") from e
+
+    # 异步包装，避免阻塞事件循环
+    async def list_available_resources_async(self) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.list_available_resources)
+
+    async def list_resources_async(self, api_version: str, kind: str, namespace: str = "default") -> List[Dict]:
+        return await asyncio.to_thread(self.list_resources, api_version, kind, namespace)
+
+    async def get_resource_async(self, api_version: str, kind: str, name: str, namespace: str = "default") -> Dict:
+        return await asyncio.to_thread(self.get_resource, api_version, kind, name, namespace)
+
+    async def create_resource_async(self, body: Dict, namespace: str = "default") -> Dict:
+        return await asyncio.to_thread(self.create_resource, body, namespace)
+
+    async def update_resource_async(self, body: Dict, namespace: str = "default") -> Dict:
+        return await asyncio.to_thread(self.update_resource, body, namespace)
+
+    async def delete_resource_async(self, api_version: str, kind: str, name: str, namespace: str = "default", grace_period_seconds: int = None) -> Dict:
+        return await asyncio.to_thread(self.delete_resource, api_version, kind, name, namespace, grace_period_seconds)

@@ -777,18 +777,21 @@ kubectl logs -f deployment/k8s-mcp-server
 
 ### 最新版本特性
 
-- ✅ **36 个工具函数**：涵盖所有主要 Kubernetes 资源
+- ✅ **40 个工具函数**：涵盖所有主要 Kubernetes 资源（含 CRD 动态发现）
 - ✅ **优雅删除支持**：部分删除函数支持 `grace_period_seconds` 参数
 - ✅ **容器化支持**：提供 Docker 和 Kubernetes 部署
-- ✅ **数据持久化**：支持配置和日志的持久化存储
+- ✅ **数据持久化**：支持配置、日志及 Pod 拷贝文件（data/copyfiles）的持久化存储
 - ✅ **健康检查**：提供完整的健康检查机制
 - ✅ **多集群管理**：支持多集群配置和快速切换
-- ✅ **批量操作**：支持21种资源类型的批量操作，包含事务回滚
+- ✅ **批量操作**：支持集群所有可发现 API 资源的批量操作，包含事务回滚
+- ✅ **发布管理**：支持 Deployment/StatefulSet/DaemonSet 的 status、undo（含指定 revision）、pause、resume
+- ✅ **资源监控**：batch_top_resources 查看 Node/Pod CPU、内存使用（依赖 metrics-server）
+- ✅ **Pod 文件拷贝**：copy_pod_file 支持 Pod 与本地双向拷贝
 - ✅ **RBAC管理**：完整的角色和权限管理系统
 - ✅ **备份恢复**：支持命名空间和资源级别的备份恢复
 - ✅ **变更验证预览**：自动验证所有写操作，显示具体变更内容和操作风险
-- ✅ **交互式操作**：支持 Pod 命令执行和端口转发
-- ✅ **扩展资源支持**：新增 HPA、NetworkPolicy、ResourceQuota 支持
+- ✅ **交互式操作**：支持 Pod 命令执行、端口转发、日志（含 previous 上一实例）
+- ✅ **多集群 kubeconfig**：batch、backup、rbac 等工具均支持 `kubeconfig_path` 参数指定目标集群
 
 
 ## ⚠️ 注意事项

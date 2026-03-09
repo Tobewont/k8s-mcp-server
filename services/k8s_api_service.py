@@ -2,7 +2,8 @@
 Kubernetes API 服务层
 提供所有 Kubernetes API 操作的封装
 """
-
+import logging
+import weakref
 from typing import Dict, List, Any, Optional, Union
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
@@ -10,6 +11,8 @@ import yaml
 import tempfile
 import os
 from utils.lowlevel import parse_secret_data, to_local_time_str
+
+logger = logging.getLogger(__name__)
 
 
 class KubernetesAPIService:
@@ -27,18 +30,23 @@ class KubernetesAPIService:
         self.batch_v1beta1_api = None
         self.autoscaling_v2_api = None
         
-        # 验证服务
-        self._advanced_service = None
+        # 验证服务（弱引用，避免循环引用）
+        self._advanced_service_ref = None
     
     def set_validation_service(self, advanced_service):
-        """设置验证服务"""
-        self._advanced_service = advanced_service
+        """设置验证服务（使用弱引用避免循环引用）"""
+        self._advanced_service_ref = weakref.ref(advanced_service) if advanced_service else None
+    
+    def _get_validation_service(self):
+        """获取验证服务实例"""
+        return self._advanced_service_ref() if self._advanced_service_ref else None
     
     async def _execute_with_validation_and_preview(self, operation_type: str, resource_type: str, 
                                                  resource_name: str, namespace: str = "default", 
                                                  resource_data: Dict = None, original_operation=None, **kwargs):
         """统一的验证、预览和执行方法"""
-        if not self._advanced_service:
+        advanced_service = self._get_validation_service()
+        if not advanced_service:
             # 如果没有验证服务，直接执行原始操作
             if original_operation:
                 return await original_operation()
@@ -46,51 +54,50 @@ class KubernetesAPIService:
                 raise Exception("验证服务未初始化且未提供原始操作方法")
         
         # 执行验证和预览
-        print(f"\n🔍 {operation_type.upper()} {resource_type}/{resource_name}")
+        logger.info("%s %s/%s", operation_type.upper(), resource_type, resource_name)
         
         if operation_type in ["update", "delete"]:
-            validation_result = await self._advanced_service.validate_and_preview_operation(
+            validation_result = await advanced_service.validate_and_preview_operation(
                 resource_type, resource_name, operation_type, namespace, resource_data
             )
             
             if not validation_result["valid"]:
-                print(validation_result["message"])
+                logger.info(validation_result["message"])
                 return {"error": validation_result["message"]}
             
-            print(validation_result["message"])
+            logger.info(validation_result["message"])
             
             # 显示变化预览
             if validation_result["changes"]:
-                print("📋 预览变化:")
+                logger.debug("预览变化: %s", validation_result["changes"])
                 for change in validation_result["changes"]:
-                    print(change)
-                print()  # 空行分隔
+                    logger.debug("  %s", change)
             
             # 显示警告
             for warning in validation_result["warnings"]:
-                print(warning)
+                logger.warning(warning)
         
         elif operation_type == "create":
             # 创建操作只需要基本验证
-            validation_result = await self._advanced_service.validate_and_preview_operation(
+            validation_result = await advanced_service.validate_and_preview_operation(
                 resource_type, resource_name, operation_type, namespace, resource_data
             )
             
             if not validation_result["valid"]:
-                print(validation_result["message"])
+                logger.info(validation_result["message"])
                 return {"error": validation_result["message"]}
             
-            print(validation_result["message"])
+            logger.info(validation_result["message"])
         
-        print(f"🚀 执行操作...")
+        logger.info("执行操作...")
         
         # 执行实际操作
         try:
             result = await original_operation()
-            print(f"✅ 操作成功完成\n")
+            logger.info("操作成功完成")
             return result
         except Exception as e:
-            print(f"❌ 操作失败: {e}\n")
+            logger.error("操作失败: %s", e)
             raise
     
     def _build_resource_data_for_validation(self, resource_type: str, name: str, namespace: str, 
@@ -506,16 +513,24 @@ class KubernetesAPIService:
             
             pod_list = []
             for pod in pods.items:
+                containers_resources = []
+                for c in (pod.spec.containers or []):
+                    res = c.resources or {}
+                    containers_resources.append({
+                        "requests": dict(res.requests) if res.requests else {},
+                        "limits": dict(res.limits) if res.limits else {}
+                    })
                 pod_info = {
                     "name": pod.metadata.name,
                     "namespace": pod.metadata.namespace,
                     "status": pod.status.phase,
-                    "created": to_local_time_str(pod.metadata.creation_timestamp, 8) if pod.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(pod.metadata.creation_timestamp) if pod.metadata.creation_timestamp else None,
                     "node": pod.spec.node_name,
                     "ready": self._get_pod_ready_status(pod),
                     "restarts": self._get_pod_restart_count(pod),
                     "pod_ip": pod.status.pod_ip,
-                    "labels": pod.metadata.labels or {}
+                    "labels": pod.metadata.labels or {},
+                    "containers_resources": containers_resources,
                 }
                 pod_list.append(pod_info)
             
@@ -535,7 +550,7 @@ class KubernetesAPIService:
                     "namespace": pod.metadata.namespace,
                     "labels": pod.metadata.labels or {},
                     "annotations": pod.metadata.annotations or {},
-                    "created": to_local_time_str(pod.metadata.creation_timestamp, 8) if pod.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(pod.metadata.creation_timestamp) if pod.metadata.creation_timestamp else None,
                     "uid": pod.metadata.uid
                 },
                 "spec": {
@@ -565,7 +580,7 @@ class KubernetesAPIService:
                 "status": {
                     "phase": pod.status.phase,
                     "pod_ip": pod.status.pod_ip,
-                    "start_time": to_local_time_str(pod.status.start_time, 8) if pod.status.start_time else None,
+                    "start_time": to_local_time_str(pod.status.start_time) if pod.status.start_time else None,
                     "conditions": [
                         {
                             "type": condition.type,
@@ -664,7 +679,7 @@ class KubernetesAPIService:
                     "ready_replicas": deployment.status.ready_replicas or 0,
                     "available_replicas": deployment.status.available_replicas or 0,
                     "updated_replicas": deployment.status.updated_replicas or 0,
-                    "created": to_local_time_str(deployment.metadata.creation_timestamp, 8) if deployment.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(deployment.metadata.creation_timestamp) if deployment.metadata.creation_timestamp else None,
                     "labels": deployment.metadata.labels or {},
                     "selector": deployment.spec.selector.match_labels or {}
                 }
@@ -692,7 +707,7 @@ class KubernetesAPIService:
                     "namespace": deployment.metadata.namespace,
                     "labels": deployment.metadata.labels or {},
                     "annotations": deployment.metadata.annotations or {},
-                    "created": to_local_time_str(deployment.metadata.creation_timestamp, 8) if deployment.metadata.creation_timestamp else None
+                    "created": to_local_time_str(deployment.metadata.creation_timestamp) if deployment.metadata.creation_timestamp else None
                 },
                 "spec": {
                     "replicas": deployment.spec.replicas,
@@ -755,7 +770,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "replicas": response.spec.replicas
                 }
             
@@ -831,7 +846,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "replicas": response.spec.replicas
             }
         
@@ -1160,7 +1175,7 @@ class KubernetesAPIService:
                     "name": item.metadata.name,
                     "namespace": item.metadata.namespace,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "replicas": item.spec.replicas,
                     "ready_replicas": item.status.ready_replicas or 0,
                     "current_replicas": item.status.current_replicas or 0,
@@ -1286,7 +1301,7 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                     "labels": response.metadata.labels or {},
                     "annotations": response.metadata.annotations or {},
-                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "created": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 },
                 "spec": {
                 "replicas": response.spec.replicas,
@@ -1349,7 +1364,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "replicas": response.spec.replicas
                 }
             
@@ -1444,7 +1459,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "replicas": response.spec.replicas
             }
             
@@ -1576,7 +1591,7 @@ class KubernetesAPIService:
                     "name": item.metadata.name,
                     "namespace": item.metadata.namespace,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "desired_number_scheduled": item.status.desired_number_scheduled or 0,
                     "current_number_scheduled": item.status.current_number_scheduled or 0,
                     "number_ready": item.status.number_ready or 0,
@@ -1702,7 +1717,7 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                     "labels": response.metadata.labels or {},
                     "annotations": response.metadata.annotations or {},
-                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "created": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 },
                 "spec": {
                     "selector": response.spec.selector.match_labels or {},
@@ -1752,7 +1767,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 }
             
             # 单体操作模式，使用简化参数创建
@@ -1849,7 +1864,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
             }
             
         # 使用统一的验证和执行方法
@@ -1993,7 +2008,7 @@ class KubernetesAPIService:
                     "external_ips": getattr(service.spec, 'external_i_ps', None) or [],
                     "ports": ports,
                     "selector": service.spec.selector or {},
-                    "created": to_local_time_str(service.metadata.creation_timestamp, 8) if service.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(service.metadata.creation_timestamp) if service.metadata.creation_timestamp else None,
                     "labels": service.metadata.labels or {}
                 }
                 service_list.append(service_info)
@@ -2026,7 +2041,7 @@ class KubernetesAPIService:
                     "namespace": service.metadata.namespace,
                     "labels": service.metadata.labels or {},
                     "annotations": service.metadata.annotations or {},
-                    "created": to_local_time_str(service.metadata.creation_timestamp, 8) if service.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(service.metadata.creation_timestamp) if service.metadata.creation_timestamp else None,
                     "uid": service.metadata.uid
                 },
                 "spec": {
@@ -2079,7 +2094,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "type": response.spec.type,
                     "cluster_ip": response.spec.cluster_ip
                 }
@@ -2125,7 +2140,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "type": response.spec.type,
                 "cluster_ip": response.spec.cluster_ip
             }
@@ -2252,7 +2267,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "type": response.spec.type,
                 "cluster_ip": response.spec.cluster_ip,
                 "selector": response.spec.selector,
@@ -2305,7 +2320,7 @@ class KubernetesAPIService:
                     "name": configmap.metadata.name,
                     "namespace": configmap.metadata.namespace,
                     "data_count": len(configmap.data or {}),
-                    "created": to_local_time_str(configmap.metadata.creation_timestamp, 8) if configmap.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(configmap.metadata.creation_timestamp) if configmap.metadata.creation_timestamp else None,
                     "labels": configmap.metadata.labels or {}
                 }
                 configmap_list.append(configmap_info)
@@ -2326,7 +2341,7 @@ class KubernetesAPIService:
                     "namespace": configmap.metadata.namespace,
                     "labels": configmap.metadata.labels or {},
                     "annotations": configmap.metadata.annotations or {},
-                    "created": to_local_time_str(configmap.metadata.creation_timestamp, 8) if configmap.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(configmap.metadata.creation_timestamp) if configmap.metadata.creation_timestamp else None,
                     "uid": configmap.metadata.uid
                 },
                 "data": configmap.data or {},
@@ -2361,7 +2376,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "data_keys": list(response.data.keys()) if response.data else []
                 }
             
@@ -2387,7 +2402,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "data_keys": list(response.data.keys()) if response.data else []
             }
             
@@ -2508,7 +2523,7 @@ class KubernetesAPIService:
                     "namespace": secret.metadata.namespace,
                     "type": secret.type,
                     "data_count": len(secret.data or {}),
-                    "created": to_local_time_str(secret.metadata.creation_timestamp, 8) if secret.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(secret.metadata.creation_timestamp) if secret.metadata.creation_timestamp else None,
                     "labels": secret.metadata.labels or {}
                 }
                 secret_list.append(secret_info)
@@ -2530,7 +2545,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "type": response.type,
                 "data_keys": list(response.data.keys()) if response.data else [],
                 "labels": response.metadata.labels,
@@ -2564,7 +2579,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "type": response.type,
                     "data_keys": list(response.data.keys()) if response.data else []
                 }
@@ -2602,7 +2617,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "type": response.type,
                 "data_keys": list(response.data.keys()) if response.data else []
             }
@@ -2731,15 +2746,15 @@ class KubernetesAPIService:
                     "name": item.metadata.name,
                     "namespace": item.metadata.namespace,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "completions": item.spec.completions,
                     "parallelism": item.spec.parallelism,
                     "active": item.status.active or 0,
                     "succeeded": item.status.succeeded or 0,
                     "failed": item.status.failed or 0,
                     "labels": item.metadata.labels,
-                    "completion_time": to_local_time_str(item.status.completion_time, 8) if item.status.completion_time else None,
-                    "start_time": to_local_time_str(item.status.start_time, 8) if item.status.start_time else None
+                    "completion_time": to_local_time_str(item.status.completion_time) if item.status.completion_time else None,
+                    "start_time": to_local_time_str(item.status.start_time) if item.status.start_time else None
                 })
             
             return jobs
@@ -2807,7 +2822,7 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                     "labels": response.metadata.labels or {},
                     "annotations": response.metadata.annotations or {},
-                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "created": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 },
                 "spec": {
                 "completions": response.spec.completions,
@@ -2827,8 +2842,8 @@ class KubernetesAPIService:
                 "active": response.status.active or 0,
                 "succeeded": response.status.succeeded or 0,
                 "failed": response.status.failed or 0,
-                "completion_time": to_local_time_str(response.status.completion_time, 8) if response.status.completion_time else None,
-                    "start_time": to_local_time_str(response.status.start_time, 8) if response.status.start_time else None
+                "completion_time": to_local_time_str(response.status.completion_time) if response.status.completion_time else None,
+                    "start_time": to_local_time_str(response.status.start_time) if response.status.start_time else None
                 }
             }
         
@@ -2861,7 +2876,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 }
             
             # 单体操作模式，使用简化参数创建
@@ -2928,7 +2943,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
             }
             
         # 使用统一的验证和执行方法
@@ -3057,11 +3072,11 @@ class KubernetesAPIService:
                     "name": item.metadata.name,
                     "namespace": item.metadata.namespace,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "schedule": item.spec.schedule,
                     "suspend": item.spec.suspend or False,
                     "active_jobs": len(item.status.active) if item.status.active else 0,
-                    "last_schedule_time": to_local_time_str(item.status.last_schedule_time, 8) if item.status.last_schedule_time else None,
+                    "last_schedule_time": to_local_time_str(item.status.last_schedule_time) if item.status.last_schedule_time else None,
                     "labels": item.metadata.labels
                 })
     
@@ -3139,7 +3154,7 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                     "labels": response.metadata.labels or {},
                     "annotations": response.metadata.annotations or {},
-                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "created": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 },
                 "spec": {
                 "schedule": response.spec.schedule,
@@ -3162,7 +3177,7 @@ class KubernetesAPIService:
                 },
                 "status": {
                     "active_jobs": len(response.status.active) if response.status.active else 0,
-                    "last_schedule_time": to_local_time_str(response.status.last_schedule_time, 8) if response.status.last_schedule_time else None
+                    "last_schedule_time": to_local_time_str(response.status.last_schedule_time) if response.status.last_schedule_time else None
                 }
             }
 
@@ -3206,7 +3221,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "schedule": response.spec.schedule
                 }
             
@@ -3289,7 +3304,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "schedule": response.spec.schedule
             }
             
@@ -3447,7 +3462,7 @@ class KubernetesAPIService:
                     "name": item.metadata.name,
                     "namespace": item.metadata.namespace,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "labels": item.metadata.labels or {},
                     "annotations": item.metadata.annotations or {},
                     "class_name": item.spec.ingress_class_name,
@@ -3494,7 +3509,7 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                 "labels": response.metadata.labels or {},
                 "annotations": response.metadata.annotations or {},
-                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "created": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 },
                 "spec": {
                     "ingressClassName": response.spec.ingress_class_name,
@@ -3568,7 +3583,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "class_name": response.spec.ingress_class_name
                 }
             
@@ -3644,7 +3659,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "class_name": response.spec.ingress_class_name
             }
             
@@ -3810,7 +3825,7 @@ class KubernetesAPIService:
                 storage_classes.append({
                     "name": item.metadata.name,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "labels": item.metadata.labels or {},
                     "annotations": item.metadata.annotations or {},
                     "provisioner": item.provisioner,
@@ -3833,7 +3848,7 @@ class KubernetesAPIService:
             return {
                 "name": response.metadata.name,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "labels": response.metadata.labels or {},
                 "annotations": response.metadata.annotations or {},
                 "provisioner": response.provisioner,
@@ -3874,7 +3889,7 @@ class KubernetesAPIService:
                 return {
                     "name": response.metadata.name,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "provisioner": response.provisioner,
                     "reclaim_policy": response.reclaim_policy,
                     "volume_binding_mode": response.volume_binding_mode
@@ -3906,7 +3921,7 @@ class KubernetesAPIService:
             return {
                 "name": response.metadata.name,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "provisioner": response.provisioner,
                 "reclaim_policy": response.reclaim_policy,
                 "volume_binding_mode": response.volume_binding_mode
@@ -4018,7 +4033,7 @@ class KubernetesAPIService:
                 persistent_volumes.append({
                     "name": item.metadata.name,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "labels": item.metadata.labels or {},
                     "annotations": item.metadata.annotations or {},
                     "capacity": item.spec.capacity or {},
@@ -4047,7 +4062,7 @@ class KubernetesAPIService:
             return {
                 "name": response.metadata.name,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "labels": response.metadata.labels or {},
                 "annotations": response.metadata.annotations or {},
                 "capacity": response.spec.capacity or {},
@@ -4094,7 +4109,7 @@ class KubernetesAPIService:
                 return {
                     "name": response.metadata.name,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "capacity": response.spec.capacity,
                     "access_modes": response.spec.access_modes,
                     "reclaim_policy": response.spec.persistent_volume_reclaim_policy,
@@ -4159,7 +4174,7 @@ class KubernetesAPIService:
             return {
                 "name": response.metadata.name,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "capacity": response.spec.capacity,
                 "access_modes": response.spec.access_modes,
                 "reclaim_policy": response.spec.persistent_volume_reclaim_policy,
@@ -4275,7 +4290,7 @@ class KubernetesAPIService:
                     "name": item.metadata.name,
                     "namespace": item.metadata.namespace,
                     "uid": item.metadata.uid,
-                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp, 8) if item.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(item.metadata.creation_timestamp) if item.metadata.creation_timestamp else None,
                     "labels": item.metadata.labels or {},
                     "annotations": item.metadata.annotations or {},
                     "access_modes": item.spec.access_modes or [],
@@ -4306,7 +4321,7 @@ class KubernetesAPIService:
                 "namespace": response.metadata.namespace,
                 "labels": response.metadata.labels or {},
                 "annotations": response.metadata.annotations or {},
-                    "created": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                    "created": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
                 },
                 "spec": {
                     "accessModes": response.spec.access_modes or [],
@@ -4326,8 +4341,8 @@ class KubernetesAPIService:
                         "status": condition.status,
                         "reason": condition.reason,
                         "message": condition.message,
-                        "last_probe_time": to_local_time_str(condition.last_probe_time, 8) if condition.last_probe_time else None,
-                        "last_transition_time": to_local_time_str(condition.last_transition_time, 8) if condition.last_transition_time else None
+                        "last_probe_time": to_local_time_str(condition.last_probe_time) if condition.last_probe_time else None,
+                        "last_transition_time": to_local_time_str(condition.last_transition_time) if condition.last_transition_time else None
                     }
                     for condition in (response.status.conditions or [])
                 ] if response.status else []
@@ -4367,7 +4382,7 @@ class KubernetesAPIService:
                     "name": response.metadata.name,
                     "namespace": response.metadata.namespace,
                     "uid": response.metadata.uid,
-                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                    "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                     "access_modes": response.spec.access_modes,
                     "requests": response.spec.resources.requests,
                     "storage_class_name": response.spec.storage_class_name
@@ -4417,7 +4432,7 @@ class KubernetesAPIService:
                 "name": response.metadata.name,
                 "namespace": response.metadata.namespace,
                 "uid": response.metadata.uid,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None,
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None,
                 "access_modes": response.spec.access_modes,
                 "requests": response.spec.resources.requests,
                 "storage_class_name": response.spec.storage_class_name
@@ -5710,7 +5725,7 @@ class KubernetesAPIService:
                     "max_replicas": hpa.spec.max_replicas,
                     "current_replicas": hpa.status.current_replicas if hpa.status else None,
                     "desired_replicas": hpa.status.desired_replicas if hpa.status else None,
-                    "creation_timestamp": to_local_time_str(hpa.metadata.creation_timestamp, 8) if hpa.metadata.creation_timestamp else None
+                    "creation_timestamp": to_local_time_str(hpa.metadata.creation_timestamp) if hpa.metadata.creation_timestamp else None
                 }
                 for hpa in hpas.items
             ]
@@ -5755,7 +5770,7 @@ class KubernetesAPIService:
                         for metric in (hpa.status.current_metrics or [])
                     ] if hpa.status else []
                 } if hpa.status else {},
-                "creation_timestamp": to_local_time_str(hpa.metadata.creation_timestamp, 8) if hpa.metadata.creation_timestamp else None
+                "creation_timestamp": to_local_time_str(hpa.metadata.creation_timestamp) if hpa.metadata.creation_timestamp else None
             }
         except Exception as e:
             raise Exception(f"获取HPA {name} 失败: {str(e)}")
@@ -5976,7 +5991,7 @@ class KubernetesAPIService:
                     "policy_types": policy.spec.policy_types or [],
                     "ingress_rules": len(policy.spec.ingress or []),
                     "egress_rules": len(policy.spec.egress or []),
-                    "creation_timestamp": to_local_time_str(policy.metadata.creation_timestamp, 8) if policy.metadata.creation_timestamp else None
+                    "creation_timestamp": to_local_time_str(policy.metadata.creation_timestamp) if policy.metadata.creation_timestamp else None
                 }
                 for policy in policies.items
             ]
@@ -6000,7 +6015,7 @@ class KubernetesAPIService:
                     "ingress": [rule.to_dict() for rule in (policy.spec.ingress or [])],
                     "egress": [rule.to_dict() for rule in (policy.spec.egress or [])]
                 },
-                "creation_timestamp": to_local_time_str(policy.metadata.creation_timestamp, 8) if policy.metadata.creation_timestamp else None
+                "creation_timestamp": to_local_time_str(policy.metadata.creation_timestamp) if policy.metadata.creation_timestamp else None
             }
         except Exception as e:
             raise Exception(f"获取NetworkPolicy {name} 失败: {str(e)}")
@@ -6225,7 +6240,7 @@ class KubernetesAPIService:
                     "namespace": quota.metadata.namespace,
                     "hard": dict(quota.spec.hard) if quota.spec.hard else {},
                     "used": dict(quota.status.used) if quota.status and quota.status.used else {},
-                    "creation_timestamp": to_local_time_str(quota.metadata.creation_timestamp, 8) if quota.metadata.creation_timestamp else None
+                    "creation_timestamp": to_local_time_str(quota.metadata.creation_timestamp) if quota.metadata.creation_timestamp else None
                 }
                 for quota in quotas.items
             ]
@@ -6251,7 +6266,7 @@ class KubernetesAPIService:
                     "hard": dict(quota.status.hard) if quota.status and quota.status.hard else {},
                     "used": dict(quota.status.used) if quota.status and quota.status.used else {}
                 } if quota.status else {},
-                "creation_timestamp": to_local_time_str(quota.metadata.creation_timestamp, 8) if quota.metadata.creation_timestamp else None
+                "creation_timestamp": to_local_time_str(quota.metadata.creation_timestamp) if quota.metadata.creation_timestamp else None
             }
         except Exception as e:
             raise Exception(f"获取ResourceQuota {name} 失败: {str(e)}")
@@ -6630,14 +6645,16 @@ class KubernetesAPIService:
                     "name": node.metadata.name,
                     "status": self._get_node_status(node),
                     "roles": self._get_node_roles(node),
-                    "age": to_local_time_str(node.metadata.creation_timestamp, 8) if node.metadata.creation_timestamp else None,
+                    "age": to_local_time_str(node.metadata.creation_timestamp) if node.metadata.creation_timestamp else None,
                     "version": node.status.node_info.kubelet_version if node.status.node_info else None,
                     "internal_ip": self._get_node_internal_ip(node),
                     "external_ip": self._get_node_external_ip(node),
                     "os_image": node.status.node_info.os_image if node.status.node_info else None,
                     "kernel_version": node.status.node_info.kernel_version if node.status.node_info else None,
                     "container_runtime": node.status.node_info.container_runtime_version if node.status.node_info else None,
-                    "labels": node.metadata.labels or {}
+                    "labels": node.metadata.labels or {},
+                    "capacity": dict(node.status.capacity) if node.status.capacity else {},
+                    "allocatable": dict(node.status.allocatable) if node.status.allocatable else {},
                 }
                 node_list.append(node_info)
             
@@ -6656,7 +6673,7 @@ class KubernetesAPIService:
                     "name": node.metadata.name,
                     "labels": node.metadata.labels or {},
                     "annotations": node.metadata.annotations or {},
-                    "created": to_local_time_str(node.metadata.creation_timestamp, 8) if node.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(node.metadata.creation_timestamp) if node.metadata.creation_timestamp else None,
                     "uid": node.metadata.uid
                 },
                 "spec": {
@@ -6806,7 +6823,7 @@ class KubernetesAPIService:
                 namespace_info = {
                     "name": namespace.metadata.name,
                     "status": namespace.status.phase,
-                    "created": to_local_time_str(namespace.metadata.creation_timestamp, 8) if namespace.metadata.creation_timestamp else None,
+                    "created": to_local_time_str(namespace.metadata.creation_timestamp) if namespace.metadata.creation_timestamp else None,
                     "labels": namespace.metadata.labels or {},
                     "annotations": namespace.metadata.annotations or {}
                 }
@@ -6826,7 +6843,7 @@ class KubernetesAPIService:
                 "name": namespace.metadata.name,
                 "uid": namespace.metadata.uid,
                 "status": namespace.status.phase,
-                "created": to_local_time_str(namespace.metadata.creation_timestamp, 8) if namespace.metadata.creation_timestamp else None,
+                "created": to_local_time_str(namespace.metadata.creation_timestamp) if namespace.metadata.creation_timestamp else None,
                 "labels": namespace.metadata.labels or {},
                 "annotations": namespace.metadata.annotations or {},
                 "conditions": [
@@ -6835,7 +6852,7 @@ class KubernetesAPIService:
                         "status": condition.status,
                         "reason": condition.reason,
                         "message": condition.message,
-                        "last_transition_time": to_local_time_str(condition.last_transition_time, 8) if condition.last_transition_time else None
+                        "last_transition_time": to_local_time_str(condition.last_transition_time) if condition.last_transition_time else None
                     }
                     for condition in (namespace.status.conditions or [])
                 ]
@@ -6936,7 +6953,7 @@ class KubernetesAPIService:
                 "labels": response.metadata.labels,
                 "annotations": response.metadata.annotations,
                 "status": response.status.phase,
-                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp, 8) if response.metadata.creation_timestamp else None
+                "creation_timestamp": to_local_time_str(response.metadata.creation_timestamp) if response.metadata.creation_timestamp else None
             }
             
         except ApiException as e:
@@ -6982,8 +6999,8 @@ class KubernetesAPIService:
                     "reason": event.reason,
                     "message": event.message,
                     "source": f"{event.source.component}/{event.source.host}" if event.source else None,
-                    "first_timestamp": to_local_time_str(event.first_timestamp, 8) if event.first_timestamp else None,
-                    "last_timestamp": to_local_time_str(event.last_timestamp, 8) if event.last_timestamp else None,
+                    "first_timestamp": to_local_time_str(event.first_timestamp) if event.first_timestamp else None,
+                    "last_timestamp": to_local_time_str(event.last_timestamp) if event.last_timestamp else None,
                     "count": event.count,
                     "object": {
                         "kind": event.involved_object.kind,
@@ -7022,7 +7039,7 @@ class KubernetesAPIService:
         if state.running:
             return {
                 "state": "running",
-                "started_at": to_local_time_str(state.running.started_at, 8) if state.running.started_at else None
+                "started_at": to_local_time_str(state.running.started_at) if state.running.started_at else None
             }
         elif state.waiting:
             return {
@@ -7035,8 +7052,8 @@ class KubernetesAPIService:
                 "state": "terminated",
                 "reason": state.terminated.reason,
                 "message": state.terminated.message,
-                "started_at": to_local_time_str(state.terminated.started_at, 8) if state.terminated.started_at else None,
-                "finished_at": to_local_time_str(state.terminated.finished_at, 8) if state.terminated.finished_at else None,
+                "started_at": to_local_time_str(state.terminated.started_at) if state.terminated.started_at else None,
+                "finished_at": to_local_time_str(state.terminated.finished_at) if state.terminated.finished_at else None,
                 "exit_code": state.terminated.exit_code
             }
         else:

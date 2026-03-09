@@ -4,6 +4,7 @@ Kubernetes 进阶服务层
 """
 
 import json
+import logging
 import yaml
 import os
 import asyncio
@@ -12,6 +13,8 @@ from typing import List, Dict, Any, Optional, Callable
 from services.k8s_api_service import KubernetesAPIService
 from services.dynamic_resource_service import DynamicResourceService
 from config import DATA_DIR, BACKUP_DIR
+
+logger = logging.getLogger(__name__)
 
 
 class ResourceManager:
@@ -102,9 +105,9 @@ class KubernetesAdvancedService:
     整合批量操作、备份恢复、资源验证等功能
     """
     
-    def __init__(self):
+    def __init__(self, kubeconfig_path: str = None):
         self.k8s_service = KubernetesAPIService()
-        self.k8s_service.load_config()
+        self.k8s_service.load_config(kubeconfig_path=kubeconfig_path)
         self.backup_dir = BACKUP_DIR
         os.makedirs(self.backup_dir, exist_ok=True)
         self.operation_history = []
@@ -773,11 +776,11 @@ class KubernetesAdvancedService:
                     resources.append(processed_resource)
                     
                 except Exception as e:
-                    print(f"获取 {config.kind} {resource_name} 失败: {e}")
+                    logger.warning("获取 %s %s 失败: %s", config.kind, resource_name, e)
                     continue
         
         except Exception as e:
-            print(f"备份 {resource_type} 失败: {e}")
+            logger.warning("备份 %s 失败: %s", resource_type, e)
             return []
         
         return resources
@@ -982,7 +985,7 @@ class KubernetesAdvancedService:
         
         return operations_map[operation][resource_type]
 
-    def _resolve_to_api_version_kind(self, resource_type: str) -> tuple:
+    async def _resolve_to_api_version_kind(self, resource_type: str) -> tuple:
         """将 resource_type 解析为 (api_version, kind)，用于动态 API"""
         rt = resource_type.lower().strip()
         kind = self._resource_type_to_kind.get(rt)
@@ -990,21 +993,21 @@ class KubernetesAdvancedService:
             api_version = self._api_version_map.get(kind, "v1")
             return (api_version, kind)
         # 从集群发现中查找（支持 CRD 等任意资源）
-        for r in self._dynamic_service.list_available_resources():
+        for r in await self._dynamic_service.list_available_resources_async():
             if r["name"].lower() == rt or r["kind"].lower() == rt:
                 return (r["group_version"], r["kind"])
         raise ValueError(f"无法解析资源类型: {resource_type}，请使用 batch_list_resources(resource_types='all') 查看可用资源")
 
-    def list_available_api_resources(self) -> List[Dict[str, Any]]:
+    async def list_available_api_resources(self) -> List[Dict[str, Any]]:
         """列出集群中所有可发现的 API 资源"""
-        return self._dynamic_service.list_available_resources()
+        return await self._dynamic_service.list_available_resources_async()
 
     async def batch_list_resources(self, resource_types: List[str], namespace: str = "default") -> Dict:
         """批量查看资源"""
         # 特殊值：列出集群中所有可用的 API 资源类型
         if len(resource_types) == 1 and resource_types[0].lower() in ("all", "__all__", "__discover__"):
             try:
-                resources = self.list_available_api_resources()
+                resources = await self.list_available_api_resources()
                 return {
                     "success": [{"resource_type": "__discover__", "available_resources": resources, "count": len(resources)}],
                     "failed": [],
@@ -1023,8 +1026,8 @@ class KubernetesAdvancedService:
                     result = await operation_func()
                 except ValueError:
                     # 不在预定义映射中，尝试动态 API
-                    api_version, kind = self._resolve_to_api_version_kind(resource_type)
-                    result = self._dynamic_service.list_resources(api_version, kind, namespace)
+                    api_version, kind = await self._resolve_to_api_version_kind(resource_type)
+                    result = await self._dynamic_service.list_resources_async(api_version, kind, namespace)
                 
                 results["success"].append({
                     "resource_type": resource_type,
@@ -1055,7 +1058,7 @@ class KubernetesAdvancedService:
                     operation_func = self._get_resource_operation(resource_type, "get", namespace)
                     result = await operation_func(name)
                 except ValueError:
-                    result = self._dynamic_service.get_resource(api_version, kind, name, namespace)
+                    result = await self._dynamic_service.get_resource_async(api_version, kind, name, namespace)
                 
                 results["success"].append({
                     "kind": kind,
@@ -1108,7 +1111,7 @@ class KubernetesAdvancedService:
 
     async def batch_create_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
         """批量创建k8s资源 - 自动集成验证和预览功能"""
-        print(f"\n🚀 开始批量创建 {len(resources)} 个资源...")
+        logger.info("开始批量创建 %d 个资源", len(resources))
         
         results = {"success": [], "failed": [], "total": len(resources)}
         
@@ -1122,7 +1125,7 @@ class KubernetesAdvancedService:
                     result = await operation_func(resource)
                 except ValueError:
                     # 不在预定义映射中，使用动态 API
-                    result = self._dynamic_service.create_resource(resource, namespace)
+                    result = await self._dynamic_service.create_resource_async(resource, namespace)
                 results["success"].append({
                     "name": resource_name,
                     "kind": resource_type,
@@ -1135,12 +1138,12 @@ class KubernetesAdvancedService:
                     "error": str(e)
                 })
         
-        print(f"✅ 批量创建完成: {len(results['success'])} 成功, {len(results['failed'])} 失败\n")
+        logger.info("批量创建完成: %d 成功, %d 失败", len(results['success']), len(results['failed']))
         return results
     
     async def batch_update_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
         """批量更新资源 - 自动集成验证和预览功能"""
-        print(f"\n🔄 开始批量更新 {len(resources)} 个资源...")
+        logger.info("开始批量更新 %d 个资源", len(resources))
         
         results = {"success": [], "failed": [], "total": len(resources)}
         
@@ -1153,7 +1156,7 @@ class KubernetesAdvancedService:
                     operation_func = self._get_resource_operation(resource_type, "update", namespace)
                     result = await operation_func(resource_name, resource)
                 except ValueError:
-                    result = self._dynamic_service.update_resource(resource, namespace)
+                    result = await self._dynamic_service.update_resource_async(resource, namespace)
                 results["success"].append({
                     "name": resource_name,
                     "kind": resource_type,
@@ -1166,7 +1169,7 @@ class KubernetesAdvancedService:
                     "error": str(e)
                 })
         
-        print(f"✅ 批量更新完成: {len(results['success'])} 成功, {len(results['failed'])} 失败\n")
+        logger.info("批量更新完成: %d 成功, %d 失败", len(results['success']), len(results['failed']))
         return results
     
     async def batch_rollout_resources(self, operations: List[Dict], namespace: str = "default") -> Dict:
@@ -1213,7 +1216,7 @@ class KubernetesAdvancedService:
     async def batch_delete_resources(self, resources: List[Dict], namespace: str = "default", 
                                    grace_period_seconds: Optional[int] = None) -> Dict:
         """批量删除资源 - 自动集成验证和预览功能"""
-        print(f"\n🗑️  开始批量删除 {len(resources)} 个资源...")
+        logger.info("开始批量删除 %d 个资源", len(resources))
         
         results = {"success": [], "failed": [], "total": len(resources)}
         
@@ -1228,7 +1231,7 @@ class KubernetesAdvancedService:
                 except ValueError:
                     kind = resource.get("kind", "Unknown")
                     api_version = resource.get("apiVersion") or self._api_version_map.get(kind, "v1")
-                    result = self._dynamic_service.delete_resource(
+                    result = await self._dynamic_service.delete_resource_async(
                         api_version, kind, resource_name, namespace, grace_period_seconds
                     )
                 results["success"].append({
@@ -1243,7 +1246,7 @@ class KubernetesAdvancedService:
                     "error": str(e)
                 })
         
-        print(f"✅ 批量删除完成: {len(results['success'])} 成功, {len(results['failed'])} 失败\n")
+        logger.info("批量删除完成: %d 成功, %d 失败", len(results['success']), len(results['failed']))
         return results
     
     # ==================== 备份恢复相关方法 ====================
@@ -1308,9 +1311,9 @@ class KubernetesAdvancedService:
                 }
                 backup_data["namespace"] = self._sanitize_for_backup(namespace_resource)
             else:
-                print(f"警告: 无法找到命名空间 {namespace}")
+                logger.warning("无法找到命名空间 %s", namespace)
         except Exception as e:
-            print(f"备份命名空间 {namespace} 失败: {e}")
+            logger.warning("备份命名空间 %s 失败: %s", namespace, e)
         
         # 备份命名空间级资源（排除 Pods/ClusterRole/ClusterRoleBinding/StorageClass/PV 等）
         resource_types = [
@@ -1327,7 +1330,7 @@ class KubernetesAdvancedService:
                 resources = await self._backup_resource_type(resource_type, namespace)
                 backup_data["resources"][resource_type] = resources
             except Exception as e:
-                print(f"备份 {resource_type} 失败: {e}")
+                logger.warning("备份 %s 失败: %s", resource_type, e)
                 backup_data["resources"][resource_type] = {"error": str(e)}
 
         # 保存备份文件（YAML）
@@ -1445,17 +1448,17 @@ class KubernetesAdvancedService:
                 await self.k8s_service.create_namespace(resource=namespace_resource)
                 results["success"].append(f"namespace/{original_namespace}")
                 results["total"] += 1
-                print(f"成功恢复命名空间: {original_namespace}")
+                logger.info("成功恢复命名空间: %s", original_namespace)
             except Exception as e:
                 # 命名空间可能已存在，这是正常的
                 if "already exists" in str(e).lower() or "conflict" in str(e).lower():
-                    print(f"命名空间 {original_namespace} 已存在，跳过创建")
+                    logger.info("命名空间 %s 已存在，跳过创建", original_namespace)
                 else:
                     results["failed"].append({
                         "resource": f"namespace/{original_namespace}",
                         "error": str(e)
                     })
-                    print(f"恢复命名空间失败: {e}")
+                    logger.warning("恢复命名空间失败: %s", e)
         else:
             # 如果备份中没有namespace定义，尝试创建（向后兼容）
             try:
@@ -1492,7 +1495,8 @@ class KubernetesAdvancedService:
                             # 验证命名空间是否匹配，不允许修改
                             current_ns = resource["metadata"].get("namespace")
                             if current_ns and current_ns != target_namespace:
-                                print(f"警告: 资源 {resource.get('metadata', {}).get('name')} 的命名空间 {current_ns} 与目标命名空间 {target_namespace} 不匹配")
+                                logger.warning("资源 %s 的命名空间 %s 与目标命名空间 %s 不匹配",
+                                    resource.get('metadata', {}).get('name'), current_ns, target_namespace)
                             resource["metadata"]["namespace"] = target_namespace
                         
                         # 根据资源类型调用相应的创建方法，使用完整资源定义
@@ -1656,18 +1660,18 @@ class KubernetesAdvancedService:
         
         # 5. 确保必要字段存在且不为空
         if not resource.get("metadata"):
-            print(f"警告: 资源缺少 metadata: {resource}")
+            logger.warning("资源缺少 metadata: %s", resource)
         
         # 检查需要 spec 字段的资源类型
         spec_required_kinds = ["Deployment", "StatefulSet", "DaemonSet", "Service", "Job", "CronJob", "Ingress", "PersistentVolumeClaim"]
         if resource.get("kind") in spec_required_kinds and not resource.get("spec"):
-            print(f"警告: {resource.get('kind')} 缺少 spec: {resource}")
+            logger.warning("%s 缺少 spec: %s", resource.get('kind'), resource)
         
         # 检查 RBAC 资源的特殊字段
         if resource.get("kind") == "Role" and not resource.get("rules"):
-            print(f"警告: Role 缺少 rules: {resource}")
+            logger.warning("Role 缺少 rules: %s", resource)
         if resource.get("kind") == "RoleBinding" and (not resource.get("subjects") or not resource.get("roleRef")):
-            print(f"警告: RoleBinding 缺少 subjects 或 roleRef: {resource}")
+            logger.warning("RoleBinding 缺少 subjects 或 roleRef: %s", resource)
         
         return resource
     

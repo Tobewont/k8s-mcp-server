@@ -3,13 +3,16 @@
 将写操作（创建、更新、删除、导入、备份等）记录到 operations.log
 """
 import json
+import logging
 from datetime import datetime, timezone, timedelta
-from config import OPERATIONS_LOG_FILE
+from config import OPERATIONS_LOG_FILE, TIMEZONE_OFFSET_HOURS
+
+logger = logging.getLogger(__name__)
 
 
 def _utc8_now() -> str:
-    """东八区当前时间"""
-    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+    """当前时间（按配置时区）"""
+    return datetime.now(timezone(timedelta(hours=TIMEZONE_OFFSET_HOURS))).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def log_operation(tool_name: str, action: str, details: dict, success: bool) -> None:
@@ -33,5 +36,5 @@ def log_operation(tool_name: str, action: str, details: dict, success: bool) -> 
         line = json.dumps(entry, ensure_ascii=False) + "\n"
         with open(OPERATIONS_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line)
-    except Exception:
-        pass  # 日志失败不应影响主流程
+    except Exception as e:
+        logger.warning("操作日志写入失败: %s", e)
