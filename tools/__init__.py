@@ -6,7 +6,10 @@ Kubernetes MCP Server 工具模块
 
 # 使用自定义的 FastMCP 类
 from utils.fastmcp_custom import FastMCP
-from config import MCP_SERVER_CONFIG
+from config import MCP_SERVER_CONFIG, ensure_dirs
+
+# 懒创建：在工具模块加载时确保数据目录存在
+ensure_dirs()
 
 # 创建统一的MCP实例，所有工具模块共享
 # 使用配置文件中的统一配置

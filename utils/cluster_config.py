@@ -7,6 +7,27 @@ from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, asdict
 from config import CLUSTERS_CONFIG_FILE, KUBECONFIGS_DIR
 
+
+def get_kubeconfig_path(name: str, for_write: bool = False) -> Optional[str]:
+    """
+    获取 kubeconfig 文件路径，支持 .yaml 和 .yml 扩展名。
+    
+    Args:
+        name: 配置名称（不含扩展名）
+        for_write: 若为 True，返回用于保存的路径（固定 .yaml）；否则返回已存在文件的路径
+    
+    Returns:
+        文件路径，若不存在且 for_write=False 则返回 None
+    """
+    if for_write:
+        return os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
+    for ext in (".yaml", ".yml"):
+        path = os.path.join(KUBECONFIGS_DIR, f"{name}{ext}")
+        if os.path.exists(path):
+            return path
+    return None
+
+
 @dataclass
 class ClusterInfo:
     """集群信息数据类"""
@@ -188,7 +209,7 @@ class ClusterConfigManager:
     
     def save_kubeconfig(self, name: str, kubeconfig_content: str) -> str:
         """
-        保存 kubeconfig 文件
+        保存 kubeconfig 文件（统一使用 .yaml 扩展名）
         
         Args:
             name: 集群名称
@@ -197,12 +218,12 @@ class ClusterConfigManager:
         Returns:
             保存的文件路径
         """
-        # 确保kubeconfig目录存在
         os.makedirs(self.kubeconfigs_dir, exist_ok=True)
-        
-        kubeconfig_path = os.path.join(self.kubeconfigs_dir, f"{name}.yaml")
-        
+        kubeconfig_path = get_kubeconfig_path(name, for_write=True)
+        # 若存在同名 .yml，删除以避免重复
+        yml_path = os.path.join(self.kubeconfigs_dir, f"{name}.yml")
+        if os.path.exists(yml_path):
+            os.remove(yml_path)
         with open(kubeconfig_path, 'w', encoding='utf-8') as f:
             f.write(kubeconfig_content)
-        
         return kubeconfig_path 

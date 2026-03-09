@@ -3,15 +3,22 @@ Kubernetes 诊断工具集合
 提供集群健康检查、节点健康检查、Pod健康检查等诊断功能
 """
 
-import json
+import logging
 from datetime import datetime
 from typing import Dict, List, Any
-from services.k8s_api_service import KubernetesAPIService
+from services.factory import get_k8s_api_service
+from utils.decorators import handle_tool_errors
+from utils.k8s_parsers import parse_cpu, parse_memory
+from utils.operations_logger import log_operation
+from utils.response import json_error, json_success
+
+logger = logging.getLogger(__name__)
 
 # 导入共享的MCP实例
 from . import mcp
 
 @mcp.tool()
+@handle_tool_errors
 async def check_cluster_health(kubeconfig_path: str = None) -> str:
     """
     检查Kubernetes集群健康状态
@@ -22,81 +29,74 @@ async def check_cluster_health(kubeconfig_path: str = None) -> str:
     Returns:
         集群健康检查结果
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    cluster_info = await k8s_service.get_cluster_info()
         
-        # 获取集群基本信息
-        cluster_info = await k8s_service.get_cluster_info()
-        
-        # 获取节点状态
-        nodes = await k8s_service.list_nodes()
-        
-        # 统计节点状态
-        ready_nodes = [node for node in nodes if node["status"] == "Ready"]
-        not_ready_nodes = [node for node in nodes if node["status"] != "Ready"]
-        
-        # 检查系统命名空间的 Pod
-        system_namespaces = ["kube-system", "kube-public", "kube-node-lease"]
-        system_pod_issues = []
-        
-        for namespace in system_namespaces:
-            try:
-                pods = await k8s_service.list_pods(namespace=namespace)
-                failed_pods = [pod for pod in pods if pod["status"] not in ["Running", "Succeeded"]]
-                if failed_pods:
-                    system_pod_issues.extend(failed_pods)
-            except:
-                # 如果命名空间不存在，跳过
-                continue
-        
-        # API 服务器健康检查
-        api_health = await k8s_service.check_api_health()
-        
-        # 计算健康得分
-        total_score = 100
-        if api_health["status"] != "healthy":
-            total_score -= 50
-        if not_ready_nodes:
-            total_score -= len(not_ready_nodes) * 20
-        if system_pod_issues:
-            total_score -= len(system_pod_issues) * 5
-        
-        health_score = max(0, total_score)
-        
-        # 确定整体状态
-        if health_score >= 90:
-            overall_status = "healthy"
-        elif health_score >= 70:
-            overall_status = "warning"
-        else:
-            overall_status = "critical"
-        
-        result = {
-            "success": True,
-            "overall_status": overall_status,
-            "health_score": health_score,
-            "cluster_info": cluster_info,
-            "node_summary": {
-                "total": len(nodes),
-                "ready": len(ready_nodes),
-                "not_ready": len(not_ready_nodes)
-            },
-            "api_server": api_health,
-            "issues": {
-                "not_ready_nodes": not_ready_nodes,
-                "failed_system_pods": system_pod_issues
-            },
-            "recommendations": _generate_health_recommendations(not_ready_nodes, system_pod_issues, api_health)
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    # 获取节点状态
+    nodes = await k8s_service.list_nodes()
+    
+    # 统计节点状态
+    ready_nodes = [node for node in nodes if node["status"] == "Ready"]
+    not_ready_nodes = [node for node in nodes if node["status"] != "Ready"]
+    
+    # 检查系统命名空间的 Pod
+    system_namespaces = ["kube-system", "kube-public", "kube-node-lease"]
+    system_pod_issues = []
+    
+    for namespace in system_namespaces:
+        try:
+            pods = await k8s_service.list_pods(namespace=namespace)
+            failed_pods = [pod for pod in pods if pod["status"] not in ["Running", "Succeeded"]]
+            if failed_pods:
+                system_pod_issues.extend(failed_pods)
+        except Exception as e:
+            logger.debug("跳过命名空间 %s: %s", namespace, e)
+            continue
+    
+    # API 服务器健康检查
+    api_health = await k8s_service.check_api_health()
+    
+    # 计算健康得分
+    total_score = 100
+    if api_health["status"] != "healthy":
+        total_score -= 50
+    if not_ready_nodes:
+        total_score -= len(not_ready_nodes) * 20
+    if system_pod_issues:
+        total_score -= len(system_pod_issues) * 5
+    
+    health_score = max(0, total_score)
+    
+    # 确定整体状态
+    if health_score >= 90:
+        overall_status = "healthy"
+    elif health_score >= 70:
+        overall_status = "warning"
+    else:
+        overall_status = "critical"
+    
+    result = {
+        "success": True,
+        "overall_status": overall_status,
+        "health_score": health_score,
+        "cluster_info": cluster_info,
+        "node_summary": {
+            "total": len(nodes),
+            "ready": len(ready_nodes),
+            "not_ready": len(not_ready_nodes)
+        },
+        "api_server": api_health,
+        "issues": {
+            "not_ready_nodes": not_ready_nodes,
+            "failed_system_pods": system_pod_issues
+        },
+        "recommendations": _generate_health_recommendations(not_ready_nodes, system_pod_issues, api_health)
+    }
+    
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def check_node_health(node_name: str = None, kubeconfig_path: str = None) -> str:
     """
     检查节点健康状态
@@ -108,50 +108,28 @@ async def check_node_health(node_name: str = None, kubeconfig_path: str = None) 
     Returns:
         节点健康状态报告
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        if node_name:
-            # 检查单个节点
-            node_details = await k8s_service.get_node(name=node_name)
-            nodes_to_check = [node_details]
-        else:
-            # 检查所有节点
-            nodes = await k8s_service.list_nodes()
-            nodes_to_check = []
-            for node in nodes:
-                node_details = await k8s_service.get_node(name=node["name"])
-                nodes_to_check.append(node_details)
-        
-        node_reports = []
-        for node in nodes_to_check:
-            node_report = _analyze_node_health(node)
-            node_reports.append(node_report)
-        
-        # 汇总结果
-        healthy_nodes = [n for n in node_reports if n["status"] == "healthy"]
-        warning_nodes = [n for n in node_reports if n["status"] == "warning"]
-        critical_nodes = [n for n in node_reports if n["status"] == "critical"]
-        
-        result = {
-            "success": True,
-            "summary": {
-                "total_nodes": len(node_reports),
-                "healthy": len(healthy_nodes),
-                "warning": len(warning_nodes),
-                "critical": len(critical_nodes)
-            },
-            "node_details": node_reports
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    if node_name:
+        node_details = await k8s_service.get_node(name=node_name)
+        nodes_to_check = [node_details]
+    else:
+        nodes = await k8s_service.list_nodes()
+        nodes_to_check = []
+        for node in nodes:
+            node_details = await k8s_service.get_node(name=node["name"])
+            nodes_to_check.append(node_details)
+    node_reports = [_analyze_node_health(n) for n in nodes_to_check]
+    healthy_nodes = [n for n in node_reports if n["status"] == "healthy"]
+    warning_nodes = [n for n in node_reports if n["status"] == "warning"]
+    critical_nodes = [n for n in node_reports if n["status"] == "critical"]
+    return json_success({
+        "success": True,
+        "summary": {"total_nodes": len(node_reports), "healthy": len(healthy_nodes), "warning": len(warning_nodes), "critical": len(critical_nodes)},
+        "node_details": node_reports
+    })
 
 @mcp.tool()
+@handle_tool_errors
 async def drain_node(node_name: str, ignore_daemonset: bool = True,
                      ignore_mirror_pods: bool = True, kubeconfig_path: str = None) -> str:
     """
@@ -168,31 +146,17 @@ async def drain_node(node_name: str, ignore_daemonset: bool = True,
     Returns:
         排水结果（已驱逐、已跳过、失败的 Pod 列表）
     """
-    try:
-        from utils.operations_logger import log_operation
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        result = await k8s_service.drain_node(
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    result = await k8s_service.drain_node(
             node_name=node_name,
             ignore_daemonset=ignore_daemonset,
             ignore_mirror_pods=ignore_mirror_pods
-        )
-        
-        log_operation("drain_node", "drain", {
-            "node": node_name,
-            "evicted": len(result["evicted"]),
-            "skipped": len(result["skipped"]),
-            "failed": len(result["failed"])
-        }, len(result["failed"]) == 0)
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    )
+    log_operation("drain_node", "drain", {"node": node_name, "evicted": len(result["evicted"]), "skipped": len(result["skipped"]), "failed": len(result["failed"])}, len(result["failed"]) == 0)
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def check_pod_health(pod_name: str = None, namespace: str = "default", 
                      kubeconfig_path: str = None, only_failed: bool = False) -> str:
     """
@@ -207,41 +171,39 @@ async def check_pod_health(pod_name: str = None, namespace: str = "default",
     Returns:
         Pod健康状态报告，包含失败Pod筛选功能
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    if pod_name:
+        # 检查单个Pod
+        pod_details = await k8s_service.get_pod(name=pod_name, namespace=namespace)
+        # 获取相关事件
+        events = await k8s_service.list_events(
+            namespace=namespace,
+            field_selector=f"involvedObject.name={pod_name}"
+        )
+        pods_to_check = [{"details": pod_details, "events": events}]
+    else:
+        # 检查命名空间中的所有Pod
+        pods = await k8s_service.list_pods(namespace=namespace)
+        pods_to_check = []
         
-        if pod_name:
-            # 检查单个Pod
-            pod_details = await k8s_service.get_pod(name=pod_name, namespace=namespace)
-            # 获取相关事件
-            events = await k8s_service.list_events(
-                namespace=namespace,
-                field_selector=f"involvedObject.name={pod_name}"
-            )
-            pods_to_check = [{"details": pod_details, "events": events}]
-        else:
-            # 检查命名空间中的所有Pod
-            pods = await k8s_service.list_pods(namespace=namespace)
-            pods_to_check = []
+        for pod in pods:
+            pod_details = await k8s_service.get_pod(name=pod["name"], namespace=namespace)
+            # 获取Pod相关事件
+            try:
+                events = await k8s_service.list_events(
+                    namespace=namespace,
+                    field_selector=f"involvedObject.name={pod['name']}"
+                )
+            except Exception as e:
+                logger.debug("获取 Pod %s 事件失败: %s", pod["name"], e)
+                events = []
             
-            for pod in pods:
-                pod_details = await k8s_service.get_pod(name=pod["name"], namespace=namespace)
-                # 获取Pod相关事件
-                try:
-                    events = await k8s_service.list_events(
-                        namespace=namespace,
-                        field_selector=f"involvedObject.name={pod['name']}"
-                    )
-                except:
-                    events = []
-                
-                pods_to_check.append({"details": pod_details, "events": events})
-        
-        pod_reports = []
-        for pod_data in pods_to_check:
-            pod_report = _analyze_pod_health(pod_data["details"], pod_data["events"])
-            pod_reports.append(pod_report)
+            pods_to_check.append({"details": pod_details, "events": events})
+    
+    pod_reports = []
+    for pod_data in pods_to_check:
+        pod_report = _analyze_pod_health(pod_data["details"], pod_data["events"])
+        pod_reports.append(pod_report)
         
         # 汇总结果
         healthy_pods = [p for p in pod_reports if p["status"] == "healthy"]
@@ -276,13 +238,10 @@ async def check_pod_health(pod_name: str = None, namespace: str = "default",
                 "pod_details": pod_reports
             }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+        return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def get_cluster_resource_usage(namespace: str = "all", kubeconfig_path: str = None) -> str:
     """
     获取集群资源使用情况
@@ -294,103 +253,28 @@ async def get_cluster_resource_usage(namespace: str = "all", kubeconfig_path: st
     Returns:
         集群资源使用情况报告
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        # 获取节点资源信息
-        nodes = await k8s_service.list_nodes()
-        node_resources = {}
-        
-        for node in nodes:
-            node_details = await k8s_service.get_node(name=node["name"])
-            capacity = node_details["status"]["capacity"]
-            allocatable = node_details["status"]["allocatable"]
-            
-            node_resources[node["name"]] = {
-                "capacity": capacity,
-                "allocatable": allocatable,
-                "status": node["status"]
-            }
-        
-        # 获取Pod资源使用情况
-        pods = await k8s_service.list_pods(namespace=namespace if namespace != "all" else "default")
-        
-        # 如果是所有命名空间，需要获取所有Pod
-        if namespace == "all":
-            # 获取所有命名空间的Pod
-            try:
-                pods = await k8s_service.list_pods(namespace="all")
-            except:
-                # 如果不支持，则逐个命名空间获取
-                namespaces = await k8s_service.list_namespaces()
-                all_pods = []
-                for ns in namespaces:
-                    try:
-                        ns_pods = await k8s_service.list_pods(namespace=ns["name"])
-                        all_pods.extend(ns_pods)
-                    except:
-                        continue
-                pods = all_pods
-        
-        pod_resources = []
-        for pod in pods:
-            try:
-                pod_details = await k8s_service.get_pod(name=pod["name"], namespace=pod["namespace"])
-                
-                # 计算Pod资源请求和限制
-                pod_requests = {"cpu": 0, "memory": 0}
-                pod_limits = {"cpu": 0, "memory": 0}
-                
-                for container in pod_details["spec"]["containers"]:
-                    resources = container.get("resources", {})
-                    requests = resources.get("requests", {})
-                    limits = resources.get("limits", {})
-                    
-                    # CPU处理
-                    if "cpu" in requests:
-                        pod_requests["cpu"] += _parse_cpu(requests["cpu"])
-                    if "cpu" in limits:
-                        pod_limits["cpu"] += _parse_cpu(limits["cpu"])
-                    
-                    # 内存处理
-                    if "memory" in requests:
-                        pod_requests["memory"] += _parse_memory(requests["memory"])
-                    if "memory" in limits:
-                        pod_limits["memory"] += _parse_memory(limits["memory"])
-                
-                pod_resources.append({
-                    "name": pod["name"],
-                    "namespace": pod["namespace"],
-                    "node": pod["node"],
-                    "requests": pod_requests,
-                    "limits": pod_limits,
-                    "status": pod["status"]
-                })
-            except:
-                continue
-        
-        # 分析资源使用情况
-        analysis = _analyze_resource_usage(node_resources, pod_resources)
-        
-        result = {
-            "success": True,
-            "timestamp": datetime.now().isoformat(),
-            "cluster_resources": {
-                "nodes": node_resources,
-                "total_pods": len(pod_resources)
-            },
-            "resource_analysis": analysis,
-            "pod_resources": pod_resources[:50] if len(pod_resources) > 50 else pod_resources  # 限制返回数量
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    nodes = await k8s_service.list_nodes()
+    node_resources = {n["name"]: {"capacity": n.get("capacity", {}), "allocatable": n.get("allocatable", {}), "status": n["status"]} for n in nodes}
+    pods = await k8s_service.list_pods(namespace="all" if namespace == "all" else (namespace or "default"))
+    pod_resources = []
+    for pod in pods:
+        pod_requests, pod_limits = {"cpu": 0, "memory": 0}, {"cpu": 0, "memory": 0}
+        for cr in pod.get("containers_resources", []):
+            for k, v in cr.get("requests", {}).items():
+                v_str = str(v) if v is not None else ""
+                if k == "cpu": pod_requests["cpu"] += parse_cpu(v_str)
+                elif k == "memory": pod_requests["memory"] += parse_memory(v_str)
+            for k, v in cr.get("limits", {}).items():
+                v_str = str(v) if v is not None else ""
+                if k == "cpu": pod_limits["cpu"] += parse_cpu(v_str)
+                elif k == "memory": pod_limits["memory"] += parse_memory(v_str)
+        pod_resources.append({"name": pod["name"], "namespace": pod["namespace"], "node": pod.get("node"), "requests": pod_requests, "limits": pod_limits, "status": pod["status"]})
+    analysis = _analyze_resource_usage(node_resources, pod_resources)
+    return json_success({"success": True, "timestamp": datetime.now().isoformat(), "cluster_resources": {"nodes": node_resources, "total_pods": len(pod_resources)}, "resource_analysis": analysis, "pod_resources": pod_resources[:50] if len(pod_resources) > 50 else pod_resources})
 
 @mcp.tool()
+@handle_tool_errors
 async def get_cluster_events(namespace: str = "all", kubeconfig_path: str = None, 
                        event_type: str = None, limit: int = 100) -> str:
     """
@@ -405,43 +289,18 @@ async def get_cluster_events(namespace: str = "all", kubeconfig_path: str = None
     Returns:
         集群事件列表
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        # 获取事件（list_events 支持 namespace="all" 获取所有命名空间）
-        events = await k8s_service.list_events(namespace=namespace)
-        
-        # 如果指定了事件类型，进行过滤
-        if event_type:
-            events = [event for event in events if event.get("type") == event_type]
-        
-        # 按时间排序（最新的在前），处理None值
-        events.sort(key=lambda x: x.get("last_timestamp") or "", reverse=True)
-        
-        # 限制数量
-        if limit:
-            events = events[:limit]
-        
-        # 统计事件类型
-        event_stats = {}
-        for event in events:
-            event_type_val = event.get("type", "Unknown")
-            event_stats[event_type_val] = event_stats.get(event_type_val, 0) + 1
-        
-        result = {
-            "success": True,
-            "namespace": namespace,
-            "total_events": len(events),
-            "event_statistics": event_stats,
-            "events": events
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    events = await k8s_service.list_events(namespace=namespace)
+    if event_type:
+        events = [e for e in events if e.get("type") == event_type]
+    events.sort(key=lambda x: x.get("last_timestamp") or "", reverse=True)
+    if limit:
+        events = events[:limit]
+    event_stats = {}
+    for e in events:
+        t = e.get("type", "Unknown")
+        event_stats[t] = event_stats.get(t, 0) + 1
+    return json_success({"success": True, "namespace": namespace, "total_events": len(events), "event_statistics": event_stats, "events": events})
 
 # 辅助函数
 def _generate_health_recommendations(not_ready_nodes: List[Dict], system_pod_issues: List[Dict], 
@@ -487,13 +346,13 @@ def _analyze_node_health(node: Dict[str, Any]) -> Dict[str, Any]:
     
     # CPU检查
     if "cpu" in capacity and "cpu" in allocatable:
-        cpu_ratio = _parse_cpu(allocatable["cpu"]) / _parse_cpu(capacity["cpu"])
+        cpu_ratio = parse_cpu(allocatable["cpu"]) / parse_cpu(capacity["cpu"])
         if cpu_ratio < 0.8:
             warnings.append(f"CPU可分配比例较低: {cpu_ratio:.2%}")
     
     # 内存检查
     if "memory" in capacity and "memory" in allocatable:
-        memory_ratio = _parse_memory(allocatable["memory"]) / _parse_memory(capacity["memory"])
+        memory_ratio = parse_memory(allocatable["memory"]) / parse_memory(capacity["memory"])
         if memory_ratio < 0.8:
             warnings.append(f"内存可分配比例较低: {memory_ratio:.2%}")
     
@@ -590,13 +449,13 @@ def _analyze_resource_usage(node_resources: Dict, pod_resources: List[Dict]) -> 
         allocatable = node_info["allocatable"]
         
         if "cpu" in capacity:
-            total_cpu_capacity += _parse_cpu(capacity["cpu"])
+            total_cpu_capacity += parse_cpu(capacity["cpu"])
         if "memory" in capacity:
-            total_memory_capacity += _parse_memory(capacity["memory"])
+            total_memory_capacity += parse_memory(capacity["memory"])
         if "cpu" in allocatable:
-            total_cpu_allocatable += _parse_cpu(allocatable["cpu"])
+            total_cpu_allocatable += parse_cpu(allocatable["cpu"])
         if "memory" in allocatable:
-            total_memory_allocatable += _parse_memory(allocatable["memory"])
+            total_memory_allocatable += parse_memory(allocatable["memory"])
     
     # Pod资源请求汇总
     total_cpu_requests = 0
@@ -626,8 +485,8 @@ def _analyze_resource_usage(node_resources: Dict, pod_resources: List[Dict]) -> 
         node_memory_requests = sum(p["requests"]["memory"] for p in node_pods)
         
         allocatable = node_info["allocatable"]
-        node_cpu_allocatable = _parse_cpu(allocatable.get("cpu", "0"))
-        node_memory_allocatable = _parse_memory(allocatable.get("memory", "0"))
+        node_cpu_allocatable = parse_cpu(allocatable.get("cpu", "0"))
+        node_memory_allocatable = parse_memory(allocatable.get("memory", "0"))
         
         node_cpu_util = node_cpu_requests / node_cpu_allocatable if node_cpu_allocatable > 0 else 0
         node_memory_util = node_memory_requests / node_memory_allocatable if node_memory_allocatable > 0 else 0
@@ -645,41 +504,4 @@ def _analyze_resource_usage(node_resources: Dict, pod_resources: List[Dict]) -> 
         if node_memory_util > 0.8:
             analysis["resource_pressure"].append(f"节点 {node_name} 内存使用率过高: {node_memory_util:.2%}")
     
-    return analysis
-
-def _parse_cpu(cpu_str: str) -> float:
-    """解析CPU字符串为核心数"""
-    if not cpu_str:
-        return 0.0
-    
-    cpu_str = str(cpu_str).lower()
-    if cpu_str.endswith('m'):
-        return float(cpu_str[:-1]) / 1000
-    elif cpu_str.endswith('n'):
-        return float(cpu_str[:-1]) / 1000000000
-    else:
-        return float(cpu_str)
-
-def _parse_memory(memory_str: str) -> int:
-    """解析内存字符串为字节数"""
-    if not memory_str:
-        return 0
-    
-    memory_str = str(memory_str)
-    units = {
-        'Ki': 1024,
-        'Mi': 1024**2,
-        'Gi': 1024**3,
-        'Ti': 1024**4,
-        'K': 1000,
-        'M': 1000**2,
-        'G': 1000**3,
-        'T': 1000**4
-    }
-    
-    for unit, multiplier in units.items():
-        if memory_str.endswith(unit):
-            return int(float(memory_str[:-len(unit)]) * multiplier)
-    
-    # 如果没有单位，假设是字节
-    return int(memory_str) 
+    return analysis 

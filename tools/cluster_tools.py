@@ -2,17 +2,31 @@
 集群和配置管理工具模块
 整合集群管理和kubeconfig配置管理功能
 """
-import json
 import os
+import re
 import yaml
-from typing import Dict, List, Any, Optional
+
+from typing import Optional
 
 from config import KUBECONFIGS_DIR
-from utils.cluster_config import ClusterConfigManager, ClusterInfo
+from utils.cluster_config import ClusterConfigManager, ClusterInfo, get_kubeconfig_path
+from utils.decorators import handle_tool_errors
 from utils.operations_logger import log_operation
+from utils.response import json_error, json_success
 
 # 导入共享的MCP实例
 from . import mcp
+
+_CLUSTER_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$')
+
+
+def _validate_cluster_name(name: str) -> Optional[str]:
+    """校验集群名称，非法返回错误信息，合法返回 None"""
+    if not name or not str(name).strip():
+        return "集群名称不能为空"
+    if not _CLUSTER_NAME_RE.match(str(name).strip()):
+        return "集群名称只能包含字母、数字、点、下划线、连字符"
+    return None
 
 # 初始化集群配置管理器
 cluster_config = ClusterConfigManager()
@@ -20,6 +34,7 @@ cluster_config = ClusterConfigManager()
 # ========================== 集群管理工具 ==========================
 
 @mcp.tool()
+@handle_tool_errors
 async def import_cluster(name: str, kubeconfig: str, service_account: str = "default", 
                    namespace: str = "default", is_default: bool = False) -> str:
     """
@@ -35,57 +50,54 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
     Returns:
         导入结果
     """
-    try:
-        # 判断kubeconfig是文件路径还是内容
-        kubeconfig_path = kubeconfig
-        if not os.path.exists(kubeconfig):
-            # 如果不是文件路径，则认为是内容，需要先保存到文件
-            try:
-                # 验证kubeconfig内容格式
-                yaml.safe_load(kubeconfig)
-                kubeconfig_path = cluster_config.save_kubeconfig(name, kubeconfig)
-            except yaml.YAMLError:
-                return json.dumps({
-                    "success": False,
-                    "error": "无效的kubeconfig格式"
-                }, ensure_ascii=False, indent=2)
-        
-        cluster_info = ClusterInfo(
-            name=name,
-            kubeconfig_path=kubeconfig_path,
-            service_account=service_account,
-            namespace=namespace,
-            is_default=is_default
-        )
-        
-        success = cluster_config.add_cluster(cluster_info)
-        log_operation("import_cluster", "import", {"name": name, "is_default": is_default}, success)
+    err = _validate_cluster_name(name)
+    if err:
+        return json_error(err)
 
-        if success:
-            result = {
-                "success": True,
-                "message": f"集群 '{name}' 导入成功",
-                "cluster": {
-                    "name": name,
-                    "service_account": service_account,
-                    "namespace": namespace,
-                    "is_default": is_default,
-                    "kubeconfig_path": kubeconfig_path
-                }
+    # 判断kubeconfig是文件路径还是内容
+    kubeconfig_path = kubeconfig
+    if not os.path.exists(kubeconfig):
+        # 如果不是文件路径，则认为是内容，需要先保存到文件
+        try:
+            # 验证kubeconfig内容格式
+            yaml.safe_load(kubeconfig)
+            kubeconfig_path = cluster_config.save_kubeconfig(name, kubeconfig)
+        except yaml.YAMLError:
+            return json_error("无效的kubeconfig格式")
+    
+    cluster_info = ClusterInfo(
+        name=name,
+        kubeconfig_path=kubeconfig_path,
+        service_account=service_account,
+        namespace=namespace,
+        is_default=is_default
+    )
+    
+    success = cluster_config.add_cluster(cluster_info)
+    log_operation("import_cluster", "import", {"name": name, "is_default": is_default}, success)
+
+    if success:
+        result = {
+            "success": True,
+            "message": f"集群 '{name}' 导入成功",
+            "cluster": {
+                "name": name,
+                "service_account": service_account,
+                "namespace": namespace,
+                "is_default": is_default,
+                "kubeconfig_path": kubeconfig_path
             }
-        else:
-            result = {
-                "success": False,
-                "error": f"集群 '{name}' 已存在"
-            }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-            
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+        }
+    else:
+        result = {
+            "success": False,
+            "error": f"集群 '{name}' 已存在"
+        }
+    
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def list_clusters() -> str:
     """
     列出所有集群配置
@@ -93,29 +105,25 @@ async def list_clusters() -> str:
     Returns:
         集群列表
     """
-    try:
-        clusters = cluster_config.list_clusters()
-        result = {
-            "success": True,
-            "clusters": [
-                {
-                    "name": cluster.name,
-                    "service_account": cluster.service_account,
-                    "namespace": cluster.namespace,
-                    "is_default": cluster.is_default
-                }
-                for cluster in clusters
-            ],
-            "count": len(clusters)
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    clusters = cluster_config.list_clusters()
+    result = {
+        "success": True,
+        "clusters": [
+            {
+                "name": cluster.name,
+                "service_account": cluster.service_account,
+                "namespace": cluster.namespace,
+                "is_default": cluster.is_default
+            }
+            for cluster in clusters
+        ],
+        "count": len(clusters)
+    }
+    
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def get_cluster(name: str) -> str:
     """
     获取指定集群配置
@@ -126,28 +134,21 @@ async def get_cluster(name: str) -> str:
     Returns:
         集群配置信息
     """
-    try:
-        cluster = cluster_config.get_cluster(name)
-        result = {
-            "success": True,
-            "cluster": {
-                "name": cluster.name,
-                "service_account": cluster.service_account,
-                "namespace": cluster.namespace,
-                "is_default": cluster.is_default
-            }
+    cluster = cluster_config.get_cluster(name)
+    result = {
+        "success": True,
+        "cluster": {
+            "name": cluster.name,
+            "service_account": cluster.service_account,
+            "namespace": cluster.namespace,
+            "is_default": cluster.is_default
         }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except ValueError as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    }
+    
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def delete_cluster(name: str) -> str:
     """
     删除集群配置
@@ -158,28 +159,24 @@ async def delete_cluster(name: str) -> str:
     Returns:
         删除结果
     """
-    try:
-        success = cluster_config.remove_cluster(name)
-        log_operation("delete_cluster", "delete", {"name": name}, success)
+    success = cluster_config.remove_cluster(name)
+    log_operation("delete_cluster", "delete", {"name": name}, success)
 
-        if success:
-            result = {
-                "success": True,
-                "message": f"集群 '{name}' 删除成功"
-            }
-        else:
-            result = {
-                "success": False,
-                "error": f"集群 '{name}' 不存在"
-            }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-            
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    if success:
+        result = {
+            "success": True,
+            "message": f"集群 '{name}' 删除成功"
+        }
+    else:
+        result = {
+            "success": False,
+            "error": f"集群 '{name}' 不存在"
+        }
+    
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def set_default_cluster(name: str) -> str:
     """
     设置默认集群
@@ -190,32 +187,27 @@ async def set_default_cluster(name: str) -> str:
     Returns:
         设置结果
     """
-    try:
-        # 直接使用集群配置管理器的方法设置默认集群
-        success = cluster_config.set_default_cluster(name)
-        log_operation("set_default_cluster", "update", {"name": name}, success)
+    err = _validate_cluster_name(name)
+    if err:
+        return json_error(err)
+    success = cluster_config.set_default_cluster(name)
+    log_operation("set_default_cluster", "update", {"name": name}, success)
 
-        if success:
-            result = {
-                "success": True,
-                "message": f"集群 '{name}' 已设置为默认集群"
-            }
-        else:
-            result = {
-                "success": False,
-                "error": f"集群 '{name}' 不存在"
-            }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-            
-    except ValueError as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    if success:
+        result = {
+            "success": True,
+            "message": f"集群 '{name}' 已设置为默认集群"
+        }
+    else:
+        result = {
+            "success": False,
+            "error": f"集群 '{name}' 不存在"
+        }
+    
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def test_cluster_connection(name: str) -> str:
     """
     测试集群连接
@@ -226,40 +218,27 @@ async def test_cluster_connection(name: str) -> str:
     Returns:
         连接测试结果
     """
-    try:
-        from kubernetes import client, config
-        
-        # 获取集群配置
-        cluster = cluster_config.get_cluster(name)
-        
-        # 加载kubeconfig
-        config.load_kube_config(config_file=cluster.kubeconfig_path)
-        
-        # 测试连接
-        v1 = client.CoreV1Api()
-        # 尝试获取命名空间列表
-        namespaces = v1.list_namespace()
-        
-        result = {
-            "success": True,
-            "message": f"集群 '{name}' 连接正常",
-            "cluster_info": {
-                "name": cluster.name,
-                "namespace_count": len(namespaces.items),
-                "default_namespace": cluster.namespace
-            }
+    err = _validate_cluster_name(name)
+    if err:
+        return json_error(err)
+    from kubernetes import client, config
+    cluster = cluster_config.get_cluster(name)
+    config.load_kube_config(config_file=cluster.kubeconfig_path)
+    v1 = client.CoreV1Api()
+    namespaces = v1.list_namespace()
+    result = {
+        "success": True,
+        "message": f"集群 '{name}' 连接正常",
+        "cluster_info": {
+            "name": cluster.name,
+            "namespace_count": len(namespaces.items),
+            "default_namespace": cluster.namespace
         }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except ValueError as e:
-        error_result = {"success": False, "error": f"集群不存在: {str(e)}"}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
-    except Exception as e:
-        error_result = {"success": False, "error": f"连接失败: {str(e)}"}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    }
+    return json_success(result)
 
 @mcp.tool()
+@handle_tool_errors
 async def get_default_cluster() -> str:
     """
     获取默认集群
@@ -267,34 +246,29 @@ async def get_default_cluster() -> str:
     Returns:
         默认集群信息
     """
-    try:
-        default_cluster = cluster_config.get_default_cluster()
-        
-        if default_cluster:
-                result = {
-                    "success": True,
-                    "cluster": {
-                    "name": default_cluster.name,
-                    "service_account": default_cluster.service_account,
-                    "namespace": default_cluster.namespace,
-                    "is_default": default_cluster.is_default
-                    }
-                }
-        else:
-            result = {
-                "success": False,
-                "error": "未设置默认集群"
+    default_cluster = cluster_config.get_default_cluster()
+    if default_cluster:
+        result = {
+            "success": True,
+            "cluster": {
+                "name": default_cluster.name,
+                "service_account": default_cluster.service_account,
+                "namespace": default_cluster.namespace,
+                "is_default": default_cluster.is_default
             }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+        }
+    else:
+        result = {
+            "success": False,
+            "error": "未设置默认集群"
+        }
+    
+    return json_success(result)
 
 # ========================== Kubeconfig 配置管理工具 ==========================
 
 @mcp.tool()
+@handle_tool_errors
 async def save_kubeconfig(name: str, content: str) -> str:
     """
     保存kubeconfig文件
@@ -306,71 +280,66 @@ async def save_kubeconfig(name: str, content: str) -> str:
     Returns:
         保存结果
     """
+    if not name or not str(name).strip():
+        return json_error("配置名称不能为空")
     try:
-        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
-        
-        # 验证kubeconfig格式
-        try:
-            config_data = yaml.safe_load(content)
-            if not isinstance(config_data, dict) or 'clusters' not in config_data:
-                error_result = {"success": False, "error": "无效的kubeconfig格式"}
-                return json.dumps(error_result, ensure_ascii=False, indent=2)
-        except yaml.YAMLError as e:
-            error_result = {"success": False, "error": f"YAML格式错误: {str(e)}"}
-            return json.dumps(error_result, ensure_ascii=False, indent=2)
-        
-        # 保存文件
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        log_operation("save_kubeconfig", "create", {"name": name}, True)
+        config_data = yaml.safe_load(content)
+        if not isinstance(config_data, dict) or 'clusters' not in config_data:
+            return json_error("无效的kubeconfig格式")
+    except yaml.YAMLError as e:
+        return json_error(f"YAML格式错误: {str(e)}")
+    config_path = cluster_config.save_kubeconfig(name, content)
+    log_operation("save_kubeconfig", "create", {"name": name}, True)
+    return json_success({"success": True, "message": f"kubeconfig '{name}' 保存成功", "path": config_path})
 
-        result = {
-            "success": True,
-            "message": f"kubeconfig '{name}' 保存成功",
-            "path": config_path
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+def _mask_kubeconfig_sensitive(content: str) -> str:
+    """脱敏 kubeconfig 中的 token、证书等敏感字段"""
+    try:
+        data = yaml.safe_load(content)
+        if not isinstance(data, dict) or "users" not in data:
+            return content
+        for user in data.get("users", []):
+            u = user.get("user", {})
+            if "token" in u:
+                u["token"] = "<masked>"
+            if "client-certificate-data" in u:
+                u["client-certificate-data"] = "<masked>"
+            if "client-key-data" in u:
+                u["client-key-data"] = "<masked>"
+        return yaml.dump(data, allow_unicode=True, default_flow_style=False)
+    except Exception:
+        return content
+
 
 @mcp.tool()
-async def load_kubeconfig(name: str) -> str:
+@handle_tool_errors
+async def load_kubeconfig(name: str, mask_sensitive: bool = False) -> str:
     """
     加载kubeconfig文件
     
+    注意：kubeconfig 包含集群认证凭据（token、证书等），请勿在不可信环境中暴露。
+    可通过 mask_sensitive=True 脱敏 token、证书等敏感字段后再输出。
+    
     Args:
         name: 配置名称
+        mask_sensitive: 是否脱敏敏感字段（token、client-certificate-data、client-key-data），默认 False
     
     Returns:
         kubeconfig文件内容
     """
-    try:
-        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
-        
-        if not os.path.exists(config_path):
-            error_result = {"success": False, "error": f"kubeconfig '{name}' 不存在"}
-            return json.dumps(error_result, ensure_ascii=False, indent=2)
-        
-        with open(config_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        result = {
-            "success": True,
-            "name": name,
-            "content": content,
-            "path": config_path
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    if not name or not str(name).strip():
+        return json_error("配置名称不能为空")
+    config_path = get_kubeconfig_path(name)
+    if not config_path:
+        return json_error(f"kubeconfig '{name}' 不存在")
+    with open(config_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if mask_sensitive:
+        content = _mask_kubeconfig_sensitive(content)
+    return json_success({"success": True, "name": name, "content": content, "path": config_path, "masked": mask_sensitive})
 
 @mcp.tool()
+@handle_tool_errors
 async def list_kubeconfigs() -> str:
     """
     列出所有保存的kubeconfig文件
@@ -378,43 +347,19 @@ async def list_kubeconfigs() -> str:
     Returns:
         kubeconfig文件列表
     """
-    try:
-        if not os.path.exists(KUBECONFIGS_DIR):
-            result = {
-                "success": True,
-                "kubeconfigs": [],
-                "count": 0
-            }
-            return json.dumps(result, ensure_ascii=False, indent=2)
-        
-        kubeconfigs = []
-        for filename in os.listdir(KUBECONFIGS_DIR):
-            if filename.endswith('.yaml') or filename.endswith('.yml'):
-                name = os.path.splitext(filename)[0]
-                config_path = os.path.join(KUBECONFIGS_DIR, filename)
-                
-                # 获取文件信息
-                stat = os.stat(config_path)
-                kubeconfigs.append({
-                    "name": name,
-                    "path": config_path,
-                    "size": stat.st_size,
-                    "modified": stat.st_mtime
-                })
-        
-        result = {
-            "success": True,
-            "kubeconfigs": kubeconfigs,
-            "count": len(kubeconfigs)
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    if not os.path.exists(KUBECONFIGS_DIR):
+        return json_success({"success": True, "kubeconfigs": [], "count": 0})
+    kubeconfigs = []
+    for filename in os.listdir(KUBECONFIGS_DIR):
+        if filename.endswith('.yaml') or filename.endswith('.yml'):
+            name = os.path.splitext(filename)[0]
+            config_path = os.path.join(KUBECONFIGS_DIR, filename)
+            stat = os.stat(config_path)
+            kubeconfigs.append({"name": name, "path": config_path, "size": stat.st_size, "modified": stat.st_mtime})
+    return json_success({"success": True, "kubeconfigs": kubeconfigs, "count": len(kubeconfigs)})
 
 @mcp.tool()
+@handle_tool_errors
 async def delete_kubeconfig(name: str) -> str:
     """
     删除kubeconfig文件
@@ -426,11 +371,9 @@ async def delete_kubeconfig(name: str) -> str:
         删除结果
     """
     try:
-        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
-        
-        if not os.path.exists(config_path):
-            error_result = {"success": False, "error": f"kubeconfig '{name}' 不存在"}
-            return json.dumps(error_result, ensure_ascii=False, indent=2)
+        config_path = get_kubeconfig_path(name)
+        if not config_path:
+            return json_error(f"kubeconfig '{name}' 不存在")
         
         os.remove(config_path)
         log_operation("delete_kubeconfig", "delete", {"name": name}, True)
@@ -440,13 +383,13 @@ async def delete_kubeconfig(name: str) -> str:
             "message": f"kubeconfig '{name}' 删除成功"
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return json_success(result)
         
     except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+        return json_error(str(e))
 
 @mcp.tool()
+@handle_tool_errors
 async def validate_kubeconfig(content: str) -> str:
     """
     验证kubeconfig文件格式
@@ -458,63 +401,27 @@ async def validate_kubeconfig(content: str) -> str:
         验证结果
     """
     try:
-        # 解析YAML
-        try:
-            config_data = yaml.safe_load(content)
-        except yaml.YAMLError as e:
-            return json.dumps({
-                "success": False,
-                "valid": False,
-                "error": f"YAML格式错误: {str(e)}"
-            }, ensure_ascii=False, indent=2)
-        
-        # 验证基本结构
-        if not isinstance(config_data, dict):
-            return json.dumps({
-                "success": False,
-                "valid": False,
-                "error": "kubeconfig必须是一个字典对象"
-            }, ensure_ascii=False, indent=2)
-        
-        required_fields = ['clusters', 'contexts', 'users']
-        missing_fields = []
-        
-        for field in required_fields:
-            if field not in config_data:
-                missing_fields.append(field)
-        
-        if missing_fields:
-            return json.dumps({
-                "success": False,
-                "valid": False,
-                "error": f"缺少必需字段: {', '.join(missing_fields)}"
-            }, ensure_ascii=False, indent=2)
-        
-        # 统计信息
-        clusters_count = len(config_data.get('clusters', []))
-        contexts_count = len(config_data.get('contexts', []))
-        users_count = len(config_data.get('users', []))
-        current_context = config_data.get('current-context', '')
-        
-        result = {
-            "success": True,
-            "valid": True,
-            "message": "kubeconfig格式有效",
-            "info": {
-                "clusters_count": clusters_count,
-                "contexts_count": contexts_count,
-                "users_count": users_count,
-                "current_context": current_context
-            }
+        config_data = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        return json_error(f"YAML格式错误: {str(e)}", valid=False)
+    if not isinstance(config_data, dict):
+        return json_error("kubeconfig必须是一个字典对象", valid=False)
+    required_fields = ['clusters', 'contexts', 'users']
+    missing_fields = [f for f in required_fields if f not in config_data]
+    if missing_fields:
+        return json_error(f"缺少必需字段: {', '.join(missing_fields)}", valid=False)
+    return json_success({
+        "success": True, "valid": True, "message": "kubeconfig格式有效",
+        "info": {
+            "clusters_count": len(config_data.get('clusters', [])),
+            "contexts_count": len(config_data.get('contexts', [])),
+            "users_count": len(config_data.get('users', [])),
+            "current_context": config_data.get('current-context', '')
         }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    })
 
 @mcp.tool()
+@handle_tool_errors
 async def get_kubeconfig_info(name: str) -> str:
     """
     获取kubeconfig文件的详细信息
@@ -525,75 +432,23 @@ async def get_kubeconfig_info(name: str) -> str:
     Returns:
         kubeconfig详细信息
     """
+    if not name or not str(name).strip():
+        return json_error("配置名称不能为空")
+    config_path = get_kubeconfig_path(name)
+    if not config_path:
+        return json_error(f"kubeconfig '{name}' 不存在")
+    with open(config_path, 'r', encoding='utf-8') as f:
+        content = f.read()
     try:
-        config_path = os.path.join(KUBECONFIGS_DIR, f"{name}.yaml")
-        
-        if not os.path.exists(config_path):
-            error_result = {"success": False, "error": f"kubeconfig '{name}' 不存在"}
-            return json.dumps(error_result, ensure_ascii=False, indent=2)
-        
-        # 读取文件内容
-        with open(config_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # 解析配置
-        try:
-            config_data = yaml.safe_load(content)
-        except yaml.YAMLError as e:
-            return json.dumps({
-                "success": False,
-                "error": f"YAML格式错误: {str(e)}"
-            }, ensure_ascii=False, indent=2)
-        
-        # 获取文件信息
-        stat = os.stat(config_path)
-        
-        # 提取集群信息
-        clusters = []
-        for cluster in config_data.get('clusters', []):
-            clusters.append({
-                "name": cluster.get('name', ''),
-                "server": cluster.get('cluster', {}).get('server', '')
-            })
-        
-        # 提取上下文信息
-        contexts = []
-        for context in config_data.get('contexts', []):
-            contexts.append({
-                "name": context.get('name', ''),
-                "cluster": context.get('context', {}).get('cluster', ''),
-                "user": context.get('context', {}).get('user', ''),
-                "namespace": context.get('context', {}).get('namespace', 'default')
-            })
-        
-        # 提取用户信息
-        users = []
-        for user in config_data.get('users', []):
-            users.append({
-                "name": user.get('name', ''),
-                "auth_method": "token" if user.get('user', {}).get('token') else 
-                             "cert" if user.get('user', {}).get('client-certificate') else
-                             "exec" if user.get('user', {}).get('exec') else "unknown"
-            })
-        
-        result = {
-            "success": True,
-            "name": name,
-            "path": config_path,
-            "file_info": {
-                "size": stat.st_size,
-                "modified": stat.st_mtime
-            },
-            "config_info": {
-                "current_context": config_data.get('current-context', ''),
-                "clusters": clusters,
-                "contexts": contexts,
-                "users": users
-            }
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+        config_data = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        return json_error(f"YAML格式错误: {str(e)}")
+    stat = os.stat(config_path)
+    clusters = [{"name": c.get('name', ''), "server": c.get('cluster', {}).get('server', '')} for c in config_data.get('clusters', [])]
+    contexts = [{"name": ctx.get('name', ''), "cluster": ctx.get('context', {}).get('cluster', ''), "user": ctx.get('context', {}).get('user', ''), "namespace": ctx.get('context', {}).get('namespace', 'default')} for ctx in config_data.get('contexts', [])]
+    users = [{"name": u.get('name', ''), "auth_method": "token" if u.get('user', {}).get('token') else "cert" if u.get('user', {}).get('client-certificate') else "exec" if u.get('user', {}).get('exec') else "unknown"} for u in config_data.get('users', [])]
+    return json_success({
+        "success": True, "name": name, "path": config_path,
+        "file_info": {"size": stat.st_size, "modified": stat.st_mtime},
+        "config_info": {"current_context": config_data.get('current-context', ''), "clusters": clusters, "contexts": contexts, "users": users}
+    })

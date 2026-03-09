@@ -39,10 +39,10 @@
 | `test_cluster_connection` | 测试集群连接是否正常                      |
 | `get_default_cluster`     | 获取当前默认集群                        |
 | `save_kubeconfig`         | 保存 kubeconfig 文件到本地             |
-| `load_kubeconfig`         | 加载已保存的 kubeconfig 内容            |
+| `load_kubeconfig`         | 加载已保存的 kubeconfig 内容，支持 `mask_sensitive=True` 脱敏 token/证书 |
 | `list_kubeconfigs`        | 列出所有已保存的 kubeconfig 文件          |
 | `delete_kubeconfig`       | 删除已保存的 kubeconfig 文件            |
-| `validate_kubeconfig`     | 验证 kubeconfig 格式是否有效            |
+| `validate_kubeconfig`     | 验证 kubeconfig 格式是否有效（参数 content：kubeconfig 文件内容） |
 | `get_kubeconfig_info`     | 获取 kubeconfig 的详细信息（集群、上下文、用户等） |
 
 
@@ -65,7 +65,7 @@
 
 ## 四、批量操作 (batch_tools.py) - 8 个
 
-**支持集群中所有可发现的 API 资源**（含 CRD）。`resource_types="all"` 可列出集群所有可用资源类型。
+**支持集群中所有可发现的 API 资源**（含 CRD）。`resource_types="all"` 可列出集群所有可用资源类型。所有工具均支持 `kubeconfig_path` 指定集群。
 
 内置支持：deployments, statefulsets, daemonsets, services, configmaps, secrets, jobs, cronjobs, ingresses, persistentvolumeclaims, serviceaccounts, roles, rolebindings, horizontalpodautoscalers, networkpolicies, resourcequotas, namespaces, pods, nodes, storageclasses, clusterroles, clusterrolebindings 等；未知类型通过 DynamicClient 自动发现并操作。
 
@@ -86,18 +86,22 @@
 
 ## 五、备份恢复 (backup_tools.py) - 4 个
 
+所有工具均支持 `kubeconfig_path` 指定集群。
+
 
 | 工具名                   | 作用                      |
 | --------------------- | ----------------------- |
 | `backup_namespace`    | 备份整个命名空间（可选是否包含 Secret） |
 | `backup_resource`     | 备份指定资源                  |
 | `restore_from_backup` | 从备份文件恢复资源               |
-| `list_backups`        | 列出备份文件（可按集群/命名空间过滤）     |
+| `list_backups`        | 列出备份文件（可按集群/命名空间过滤），仅读本地目录，无需 K8s 连接 |
 
 
 ---
 
 ## 六、RBAC 管理 (rbac_tools.py) - 4 个
+
+所有工具均支持 `kubeconfig_path` 指定集群。
 
 
 | 工具名                                         | 作用                                                               |
@@ -110,15 +114,48 @@
 
 ---
 
+## 工具能力说明
+
+- **get_cluster_info**：获取集群元信息（API 版本、服务器地址、集群名称等），与 `batch_list_resources` 不同。
+- **batch_list_resources**：列出各类资源的实例（如 Pod、Node、Deployment 等），`resource_types="all"` 可发现集群所有可用 API 资源类型。
+
 ## 已覆盖的常见能力（通过 batch 工具）
 
 - **list_namespaces / list_nodes / list_pods** → `batch_list_resources` 传入 `["namespaces"]` / `["nodes"]` / `["pods"]`
 - **kubectl top nodes / kubectl top pods** → `batch_top_resources` 传入 `["nodes"]` / `["pods"]`
-- **kubectl rollout undo/status/pause/resume** → `batch_rollout_resources` 传入对应 action，undo 可带 `revision` 指定版本
+- **kubectl rollout undo/status/pause/resume** → `batch_rollout_resources` 传入 operations 数组，每项含 kind、name、action（status/undo/pause/resume），undo 可带 `revision` 指定回滚版本
 - **kubectl cp** → `copy_pod_file` 指定 direction 为 from_pod 或 to_pod
 - **create_namespace** → `batch_create_resources` 传入 Namespace 资源
 - **scale_deployment** → `batch_update_resources` 传入修改了 `spec.replicas` 的 Deployment
 - **get_pod_describe** → `batch_describe_resources` 传入 `[{"kind":"Pod","name":"xxx"}]`
 - **apply_yaml** → `batch_create_resources` / `batch_update_resources` 传入解析后的资源对象
 - **bind_user_to_role** → `batch_create_resources` 传入 RoleBinding 资源
+
+## 响应格式与约定
+
+### 批量操作部分成功
+
+`batch_create_resources`、`batch_update_resources`、`batch_delete_resources` 在**部分成功**（既有成功又有失败）时返回 `json_partial_success`，响应包含：
+
+- `success`: true
+- `partial`: true
+- `success_count`: 成功数量
+- `failed_count`: 失败数量
+- `success`: 成功项列表
+- `failed`: 失败项列表
+
+全成功或全失败时仍使用标准 `json_success` 格式。
+
+### 操作日志（log_operation）
+
+仅**写操作**记录到 `logs/operations.log`，读操作不记录。
+
+| 记录 | 不记录 |
+|------|--------|
+| import_cluster, delete_cluster, set_default_cluster | list_clusters, get_cluster, get_default_cluster |
+| save_kubeconfig, delete_kubeconfig | load_kubeconfig, list_kubeconfigs, validate_kubeconfig |
+| copy_pod_file, backup_*, restore_from_backup | list_backups |
+| batch_create/update/delete/restart_resources | batch_list, batch_describe, batch_top |
+| batch_rollout（仅 undo/pause/resume） | batch_rollout（action=status） |
+| drain_node, create_role_template | analyze_*, check_*, list_role_serviceaccounts |
 

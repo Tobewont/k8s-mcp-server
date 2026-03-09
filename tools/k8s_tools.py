@@ -2,40 +2,21 @@
 Kubernetes 工具集合
 提供集群健康检查、查询功能和基本信息查询功能
 """
-
-import json
 import os
-from services.k8s_api_service import KubernetesAPIService
+
 from config import COPYFILES_DIR
+from services.factory import get_k8s_api_service
+from utils.decorators import handle_tool_errors
+from utils.operations_logger import log_operation
+from utils.response import json_error, json_success
 
 # 导入共享的MCP实例
 from . import mcp
 
-
-def _resolve_namespace(namespace: str = None) -> str:
-    """
-    解析命名空间，如果没有指定则使用默认集群的命名空间
-    
-    Args:
-        namespace: 指定的命名空间
-        
-    Returns:
-        解析后的命名空间
-    """
-    if namespace is not None:
-        return namespace
-    
-    try:
-        from utils.cluster_config import ClusterConfigManager
-        cluster_manager = ClusterConfigManager()
-        default_cluster = cluster_manager.get_default_cluster()
-        return default_cluster.namespace if default_cluster else "default"
-    except Exception:
-        return "default"
-
 # ========================== 集群信息工具 ==========================
 
 @mcp.tool()
+@handle_tool_errors
 async def get_cluster_info(kubeconfig_path: str = None) -> str:
     """
     获取Kubernetes集群信息
@@ -46,26 +27,14 @@ async def get_cluster_info(kubeconfig_path: str = None) -> str:
     Returns:
         集群信息
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        cluster_info = await k8s_service.get_cluster_info()
-        
-        result = {
-            "success": True,
-            "cluster_info": cluster_info
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    cluster_info = await k8s_service.get_cluster_info()
+    return json_success({"success": True, "cluster_info": cluster_info})
 
 # ========================== Pod 日志和操作工具 ==========================
 
 @mcp.tool()
+@handle_tool_errors
 async def get_pod_logs(name: str, namespace: str = "default", lines: int = 100, 
                  container: str = None, previous: bool = False, kubeconfig_path: str = None) -> str:
     """
@@ -82,37 +51,16 @@ async def get_pod_logs(name: str, namespace: str = "default", lines: int = 100,
     Returns:
         包含Pod日志的结果
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        logs = await k8s_service.get_pod_logs(
-            name=name,
-            namespace=namespace,
-            lines=lines,
-            container=container,
-            previous=previous
-        )
-        
-        result = {
-            "success": True,
-            "logs": logs,
-            "pod_name": name,
-            "namespace": namespace,
-            "container": container,
-            "lines": lines,
-            "previous": previous
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    if not isinstance(lines, int) or lines < 1:
+        return json_error("lines 必须为正整数")
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    logs = await k8s_service.get_pod_logs(name=name, namespace=namespace, lines=lines, container=container, previous=previous)
+    return json_success({"success": True, "logs": logs, "pod_name": name, "namespace": namespace, "container": container, "lines": lines, "previous": previous})
 
 # ========================== 交互式操作工具 ==========================
 
 @mcp.tool()
+@handle_tool_errors
 async def exec_pod_command(pod_name: str, command: list, namespace: str = "default", 
                           container: str = None, kubeconfig_path: str = None) -> str:
     """
@@ -128,35 +76,15 @@ async def exec_pod_command(pod_name: str, command: list, namespace: str = "defau
     Returns:
         命令执行结果
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        # 执行命令
-        exec_result = await k8s_service.exec_pod_command(
-            pod_name=pod_name,
-            command=command,
-            namespace=namespace,
-            container=container
-        )
-        
-        result = {
-            "success": True,
-            "pod_name": pod_name,
-            "namespace": namespace,
-            "container": container,
-            "command": command,
-            "output": exec_result
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    if not command or not isinstance(command, (list, tuple)):
+        return json_error("command 必须为非空列表")
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    exec_result = await k8s_service.exec_pod_command(pod_name=pod_name, command=command, namespace=namespace, container=container)
+    return json_success({"success": True, "pod_name": pod_name, "namespace": namespace, "container": container, "command": command, "output": exec_result})
 
 
 @mcp.tool()
+@handle_tool_errors
 async def copy_pod_file(pod_name: str, direction: str, source_path: str, dest_path: str = None,
                         namespace: str = "default", container: str = None,
                         kubeconfig_path: str = None) -> str:
@@ -175,58 +103,27 @@ async def copy_pod_file(pod_name: str, direction: str, source_path: str, dest_pa
     Returns:
         拷贝结果，包含实际保存路径
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        if direction == "from_pod":
-            if not dest_path:
-                base = os.path.basename(source_path.rstrip('/')) or "file"
-                dest_path = os.path.join(COPYFILES_DIR, pod_name, base)
-            result_path = await k8s_service.copy_from_pod(
-                pod_name=pod_name,
-                pod_path=source_path,
-                local_path=dest_path,
-                namespace=namespace,
-                container=container
-            )
-            return json.dumps({
-                "success": True,
-                "direction": "from_pod",
-                "pod_path": source_path,
-                "local_path": result_path,
-                "message": f"已从 Pod 拷贝到 {result_path}"
-            }, ensure_ascii=False, indent=2)
-        elif direction == "to_pod":
-            if not dest_path:
-                return json.dumps({
-                    "success": False,
-                    "error": "to_pod 方向必须指定 dest_path（Pod 内目标路径）"
-                }, ensure_ascii=False, indent=2)
-            result_path = await k8s_service.copy_to_pod(
-                pod_name=pod_name,
-                local_path=source_path,
-                pod_path=dest_path,
-                namespace=namespace,
-                container=container
-            )
-            return json.dumps({
-                "success": True,
-                "direction": "to_pod",
-                "local_path": source_path,
-                "pod_path": result_path,
-                "message": f"已拷贝到 Pod {result_path}"
-            }, ensure_ascii=False, indent=2)
-        else:
-            return json.dumps({
-                "success": False,
-                "error": f"direction 必须是 from_pod 或 to_pod，当前为 {direction}"
-            }, ensure_ascii=False, indent=2)
-    except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False, indent=2)
+    if not source_path or not str(source_path).strip():
+        return json_error("source_path 不能为空")
+    if direction not in ("from_pod", "to_pod"):
+        return json_error(f"direction 必须是 from_pod 或 to_pod，当前为 {direction}")
+    if direction == "to_pod" and not dest_path:
+        return json_error("to_pod 方向必须指定 dest_path（Pod 内目标路径）")
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    if direction == "from_pod":
+        if not dest_path:
+            base = os.path.basename(source_path.rstrip('/')) or "file"
+            dest_path = os.path.join(COPYFILES_DIR, pod_name, base)
+        result_path = await k8s_service.copy_from_pod(pod_name=pod_name, pod_path=source_path, local_path=dest_path, namespace=namespace, container=container)
+        log_operation("copy_pod_file", "copy", {"direction": "from_pod", "pod_name": pod_name, "pod_path": source_path, "local_path": result_path, "namespace": namespace}, True)
+        return json_success({"success": True, "direction": "from_pod", "pod_path": source_path, "local_path": result_path, "message": f"已从 Pod 拷贝到 {result_path}"})
+    result_path = await k8s_service.copy_to_pod(pod_name=pod_name, local_path=source_path, pod_path=dest_path, namespace=namespace, container=container)
+    log_operation("copy_pod_file", "copy", {"direction": "to_pod", "pod_name": pod_name, "local_path": source_path, "pod_path": result_path, "namespace": namespace}, True)
+    return json_success({"success": True, "direction": "to_pod", "local_path": source_path, "pod_path": result_path, "message": f"已拷贝到 Pod {result_path}"})
 
 
 @mcp.tool()
+@handle_tool_errors
 async def port_forward(pod_name: str, local_port: int, pod_port: int, 
                       namespace: str = "default", kubeconfig_path: str = None) -> str:
     """
@@ -242,29 +139,8 @@ async def port_forward(pod_name: str, local_port: int, pod_port: int,
     Returns:
         端口转发结果
     """
-    try:
-        k8s_service = KubernetesAPIService()
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        # 启动端口转发
-        forward_result = await k8s_service.port_forward(
-            pod_name=pod_name,
-            local_port=local_port,
-            pod_port=pod_port,
-            namespace=namespace
-        )
-        
-        result = {
-            "success": True,
-            "pod_name": pod_name,
-            "namespace": namespace,
-            "local_port": local_port,
-            "pod_port": pod_port,
-            "forward_info": forward_result
-        }
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+    if not (1 <= local_port <= 65535) or not (1 <= pod_port <= 65535):
+        return json_error("local_port 和 pod_port 必须在 1-65535 范围内")
+    k8s_service = get_k8s_api_service(kubeconfig_path)
+    forward_result = await k8s_service.port_forward(pod_name=pod_name, local_port=local_port, pod_port=pod_port, namespace=namespace)
+    return json_success({"success": True, "pod_name": pod_name, "namespace": namespace, "local_port": local_port, "pod_port": pod_port, "forward_info": forward_result})

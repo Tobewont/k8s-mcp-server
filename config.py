@@ -7,24 +7,24 @@ import os
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
 
-# 确保目录存在
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(LOGS_DIR, exist_ok=True)
-
 # 集群配置文件路径
 CLUSTERS_CONFIG_FILE = os.path.join(DATA_DIR, "clusters.json")
 KUBECONFIGS_DIR = os.path.join(DATA_DIR, "kubeconfigs")
 
 # 备份目录
 BACKUP_DIR = os.path.join(DATA_DIR, "backup")
-os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # Pod 文件拷贝目录
 COPYFILES_DIR = os.path.join(DATA_DIR, "copyfiles")
-os.makedirs(COPYFILES_DIR, exist_ok=True)
 
-# 确保kubeconfigs目录存在
-os.makedirs(KUBECONFIGS_DIR, exist_ok=True)
+
+def ensure_dirs() -> None:
+    """确保数据目录存在，在工具模块加载时调用"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    os.makedirs(COPYFILES_DIR, exist_ok=True)
+    os.makedirs(KUBECONFIGS_DIR, exist_ok=True)
 
 # 日志配置
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
@@ -74,6 +74,9 @@ MCP_SERVER_CONFIG = {
 _dependencies_env = os.getenv("MCP_DEPENDENCIES", "")
 if _dependencies_env.strip():
     MCP_SERVER_CONFIG["dependencies"] = [dep.strip() for dep in _dependencies_env.split(",")]
+
+# 时区配置（小时偏移，默认东八区）
+TIMEZONE_OFFSET_HOURS = int(os.getenv("TIMEZONE_OFFSET_HOURS", "8"))
 
 # 环境配置文件
 ENV_FILE = ".env"
