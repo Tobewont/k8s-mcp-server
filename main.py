@@ -64,10 +64,11 @@ async def main():
             await server.serve()
             
         except Exception as e:
-            print(f"SSE mode failed: {e}", file=sys.stderr)
+            if isinstance(e, ImportError):
+                print("SSE mode failed (missing uvicorn). Install: pip install uvicorn", file=sys.stderr)
+            else:
+                print(f"SSE mode failed: {e}", file=sys.stderr)
             print("Falling back to stdio mode...", file=sys.stderr)
-            
-            # 回退到 stdio 模式
             async with stdio_server() as (read_stream, write_stream):
                 await mcp.mcp_server.run(
                     read_stream,

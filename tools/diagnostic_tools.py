@@ -5,7 +5,7 @@ Kubernetes 诊断工具集合
 
 import logging
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from services.factory import get_k8s_api_service
 from utils.decorators import handle_tool_errors
 from utils.k8s_parsers import parse_cpu, parse_memory
@@ -19,17 +19,21 @@ from . import mcp
 
 @mcp.tool()
 @handle_tool_errors
-async def check_cluster_health(kubeconfig_path: str = None) -> str:
+async def check_cluster_health(kubeconfig_path: Optional[str] = None,
+                               cluster_name: Optional[str] = None) -> str:
     """
     检查Kubernetes集群健康状态
     
     Args:
-        kubeconfig_path: kubeconfig文件路径
+        kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
+        cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
     
     Returns:
         集群健康检查结果
     """
-    k8s_service = get_k8s_api_service(kubeconfig_path)
+    from utils.cluster_config import resolve_kubeconfig_path
+    effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
+    k8s_service = get_k8s_api_service(effective_path)
     cluster_info = await k8s_service.get_cluster_info()
         
     # 获取节点状态
@@ -97,27 +101,27 @@ async def check_cluster_health(kubeconfig_path: str = None) -> str:
 
 @mcp.tool()
 @handle_tool_errors
-async def check_node_health(node_name: str = None, kubeconfig_path: str = None) -> str:
+async def check_node_health(node_name: Optional[str] = None, kubeconfig_path: Optional[str] = None,
+                            cluster_name: Optional[str] = None) -> str:
     """
     检查节点健康状态
     
     Args:
         node_name: 节点名称，如果不提供则检查所有节点
-        kubeconfig_path: kubeconfig文件路径
+        kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
+        cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
     
     Returns:
         节点健康状态报告
     """
-    k8s_service = get_k8s_api_service(kubeconfig_path)
+    from utils.cluster_config import resolve_kubeconfig_path
+    effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
+    k8s_service = get_k8s_api_service(effective_path)
     if node_name:
         node_details = await k8s_service.get_node(name=node_name)
         nodes_to_check = [node_details]
     else:
-        nodes = await k8s_service.list_nodes()
-        nodes_to_check = []
-        for node in nodes:
-            node_details = await k8s_service.get_node(name=node["name"])
-            nodes_to_check.append(node_details)
+        nodes_to_check = await k8s_service.list_nodes_detailed()
     node_reports = [_analyze_node_health(n) for n in nodes_to_check]
     healthy_nodes = [n for n in node_reports if n["status"] == "healthy"]
     warning_nodes = [n for n in node_reports if n["status"] == "warning"]
@@ -131,7 +135,8 @@ async def check_node_health(node_name: str = None, kubeconfig_path: str = None) 
 @mcp.tool()
 @handle_tool_errors
 async def drain_node(node_name: str, ignore_daemonset: bool = True,
-                     ignore_mirror_pods: bool = True, kubeconfig_path: str = None) -> str:
+                     ignore_mirror_pods: bool = True, kubeconfig_path: Optional[str] = None,
+                     cluster_name: Optional[str] = None) -> str:
     """
     节点排水（drain）：将节点设为不可调度并驱逐该节点上的 Pod
     
@@ -141,12 +146,15 @@ async def drain_node(node_name: str, ignore_daemonset: bool = True,
         node_name: 节点名称
         ignore_daemonset: 是否跳过 DaemonSet Pod，默认 True
         ignore_mirror_pods: 是否跳过 mirror pod（静态 Pod 镜像），默认 True
-        kubeconfig_path: kubeconfig 文件路径
+        kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
+        cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
     
     Returns:
         排水结果（已驱逐、已跳过、失败的 Pod 列表）
     """
-    k8s_service = get_k8s_api_service(kubeconfig_path)
+    from utils.cluster_config import resolve_kubeconfig_path
+    effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
+    k8s_service = get_k8s_api_service(effective_path)
     result = await k8s_service.drain_node(
             node_name=node_name,
             ignore_daemonset=ignore_daemonset,
@@ -157,21 +165,26 @@ async def drain_node(node_name: str, ignore_daemonset: bool = True,
 
 @mcp.tool()
 @handle_tool_errors
-async def check_pod_health(pod_name: str = None, namespace: str = "default", 
-                     kubeconfig_path: str = None, only_failed: bool = False) -> str:
+async def check_pod_health(pod_name: Optional[str] = None, namespace: str = "default",
+                     kubeconfig_path: Optional[str] = None, cluster_name: Optional[str] = None,
+                     only_failed: bool = False, limit: int = 100) -> str:
     """
     检查Pod健康状态，支持筛选失败的Pod
     
     Args:
         pod_name: Pod名称，如果不提供则检查命名空间中的所有Pod
         namespace: Kubernetes命名空间
-        kubeconfig_path: kubeconfig文件路径
+        kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
+        cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
         only_failed: 是否只返回失败或异常的Pod，默认为False
+        limit: 当检查命名空间内所有 Pod 时，最多处理的 Pod 数量，默认 100，避免大量 Pod 时过慢
     
     Returns:
         Pod健康状态报告，包含失败Pod筛选功能
     """
-    k8s_service = get_k8s_api_service(kubeconfig_path)
+    from utils.cluster_config import resolve_kubeconfig_path
+    effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
+    k8s_service = get_k8s_api_service(effective_path)
     if pod_name:
         # 检查单个Pod
         pod_details = await k8s_service.get_pod(name=pod_name, namespace=namespace)
@@ -182,11 +195,12 @@ async def check_pod_health(pod_name: str = None, namespace: str = "default",
         )
         pods_to_check = [{"details": pod_details, "events": events}]
     else:
-        # 检查命名空间中的所有Pod
+        # 检查命名空间中的所有Pod（限制数量避免过慢）
         pods = await k8s_service.list_pods(namespace=namespace)
         pods_to_check = []
-        
-        for pod in pods:
+        pods_to_process = pods[:limit] if limit > 0 else pods
+
+        for pod in pods_to_process:
             pod_details = await k8s_service.get_pod(name=pod["name"], namespace=namespace)
             # 获取Pod相关事件
             try:
@@ -204,56 +218,63 @@ async def check_pod_health(pod_name: str = None, namespace: str = "default",
     for pod_data in pods_to_check:
         pod_report = _analyze_pod_health(pod_data["details"], pod_data["events"])
         pod_reports.append(pod_report)
-        
-        # 汇总结果
-        healthy_pods = [p for p in pod_reports if p["status"] == "healthy"]
-        warning_pods = [p for p in pod_reports if p["status"] == "warning"]
-        critical_pods = [p for p in pod_reports if p["status"] == "critical"]
-        
-        # 如果只需要失败的Pod，则筛选出critical和warning状态的Pod
-        if only_failed:
-            failed_pods = warning_pods + critical_pods
-            result = {
-                "success": True,
-                "namespace": namespace,
-                "filter": "only_failed_pods",
-                "summary": {
-                    "total_pods_checked": len(pod_reports),
-                    "failed_pods_count": len(failed_pods),
-                    "warning": len(warning_pods),
-                    "critical": len(critical_pods)
-                },
-                "failed_pods": failed_pods
-            }
-        else:
-            result = {
-                "success": True,
-                "namespace": namespace,
-                "summary": {
-                    "total_pods": len(pod_reports),
-                    "healthy": len(healthy_pods),
-                    "warning": len(warning_pods),
-                    "critical": len(critical_pods)
-                },
-                "pod_details": pod_reports
-            }
-        
-        return json_success(result)
+
+    # 汇总结果（在循环外）
+    healthy_pods = [p for p in pod_reports if p["status"] == "healthy"]
+    warning_pods = [p for p in pod_reports if p["status"] == "warning"]
+    critical_pods = [p for p in pod_reports if p["status"] == "critical"]
+
+    truncated = limit > 0 and len(pods) > limit if not pod_name else False
+    if only_failed:
+        failed_pods = warning_pods + critical_pods
+        result = {
+            "success": True,
+            "namespace": namespace,
+            "filter": "only_failed_pods",
+            "summary": {
+                "total_pods_checked": len(pod_reports),
+                "total_pods_in_namespace": len(pods) if not pod_name else 1,
+                "truncated": truncated,
+                "failed_pods_count": len(failed_pods),
+                "warning": len(warning_pods),
+                "critical": len(critical_pods)
+            },
+            "failed_pods": failed_pods
+        }
+    else:
+        result = {
+            "success": True,
+            "namespace": namespace,
+            "summary": {
+                "total_pods": len(pod_reports),
+                "total_pods_in_namespace": len(pods) if not pod_name else 1,
+                "truncated": truncated,
+                "healthy": len(healthy_pods),
+                "warning": len(warning_pods),
+                "critical": len(critical_pods)
+            },
+            "pod_details": pod_reports
+        }
+    return json_success(result)
 
 @mcp.tool()
 @handle_tool_errors
-async def get_cluster_resource_usage(namespace: str = "all", kubeconfig_path: str = None) -> str:
+async def get_cluster_resource_usage(namespace: str = "all", kubeconfig_path: Optional[str] = None,
+                                     cluster_name: Optional[str] = None) -> str:
     """
     获取集群资源使用情况
     
     Args:
         namespace: Kubernetes命名空间，"all"表示所有命名空间，默认为"all"
-        kubeconfig_path: kubeconfig文件路径
+        kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
+        cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
     
     Returns:
-        集群资源使用情况报告
+        集群资源使用情况报告。pod_resources 超过 50 条时会截断，返回 truncated 和 total_count 说明
     """
-    k8s_service = get_k8s_api_service(kubeconfig_path)
+    from utils.cluster_config import resolve_kubeconfig_path
+    effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
+    k8s_service = get_k8s_api_service(effective_path)
     nodes = await k8s_service.list_nodes()
     node_resources = {n["name"]: {"capacity": n.get("capacity", {}), "allocatable": n.get("allocatable", {}), "status": n["status"]} for n in nodes}
     pods = await k8s_service.list_pods(namespace="all" if namespace == "all" else (namespace or "default"))
@@ -271,25 +292,40 @@ async def get_cluster_resource_usage(namespace: str = "all", kubeconfig_path: st
                 elif k == "memory": pod_limits["memory"] += parse_memory(v_str)
         pod_resources.append({"name": pod["name"], "namespace": pod["namespace"], "node": pod.get("node"), "requests": pod_requests, "limits": pod_limits, "status": pod["status"]})
     analysis = _analyze_resource_usage(node_resources, pod_resources)
-    return json_success({"success": True, "timestamp": datetime.now().isoformat(), "cluster_resources": {"nodes": node_resources, "total_pods": len(pod_resources)}, "resource_analysis": analysis, "pod_resources": pod_resources[:50] if len(pod_resources) > 50 else pod_resources})
+    max_pods_display = 50
+    truncated = len(pod_resources) > max_pods_display
+    displayed = pod_resources[:max_pods_display] if truncated else pod_resources
+    return json_success({
+        "success": True,
+        "timestamp": datetime.now().isoformat(),
+        "cluster_resources": {"nodes": node_resources, "total_pods": len(pod_resources)},
+        "resource_analysis": analysis,
+        "pod_resources": displayed,
+        "pod_resources_truncated": truncated,
+        "pod_resources_total_count": len(pod_resources),
+    })
 
 @mcp.tool()
 @handle_tool_errors
-async def get_cluster_events(namespace: str = "all", kubeconfig_path: str = None, 
-                       event_type: str = None, limit: int = 100) -> str:
+async def get_cluster_events(namespace: str = "all", kubeconfig_path: Optional[str] = None,
+                             cluster_name: Optional[str] = None, event_type: Optional[str] = None,
+                             limit: int = 100) -> str:
     """
     获取集群事件
     
     Args:
         namespace: Kubernetes命名空间，"all"表示所有命名空间
-        kubeconfig_path: kubeconfig文件路径
+        kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
+        cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
         event_type: 事件类型过滤（Warning, Normal等）
         limit: 返回事件数量限制
     
     Returns:
         集群事件列表
     """
-    k8s_service = get_k8s_api_service(kubeconfig_path)
+    from utils.cluster_config import resolve_kubeconfig_path
+    effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
+    k8s_service = get_k8s_api_service(effective_path)
     events = await k8s_service.list_events(namespace=namespace)
     if event_type:
         events = [e for e in events if e.get("type") == event_type]

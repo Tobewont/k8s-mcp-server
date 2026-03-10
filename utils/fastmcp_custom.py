@@ -5,7 +5,6 @@
 
 from __future__ import annotations as _annotations
 
-import sys
 from typing import Any
 
 # 修复 anyio 的类型注解兼容性问题
@@ -53,7 +52,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.routing import Mount, Route
 
-from .lowlevel import McpServer
+from .mcp_server import McpServer
 
 logger = get_logger(__name__)
 

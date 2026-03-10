@@ -9,7 +9,11 @@ import yaml
 from typing import Optional
 
 from config import KUBECONFIGS_DIR
-from utils.cluster_config import ClusterConfigManager, ClusterInfo, get_kubeconfig_path
+from utils.cluster_config import (
+    ClusterInfo,
+    get_cluster_config_manager,
+    get_kubeconfig_path,
+)
 from utils.decorators import handle_tool_errors
 from utils.operations_logger import log_operation
 from utils.response import json_error, json_success
@@ -20,16 +24,23 @@ from . import mcp
 _CLUSTER_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$')
 
 
-def _validate_cluster_name(name: str) -> Optional[str]:
-    """校验集群名称，非法返回错误信息，合法返回 None"""
+def _validate_cluster_name(name: str, strict: bool = False) -> Optional[str]:
+    """
+    校验集群名称。
+    strict=True: 用于 import 等会创建文件的场景，仅允许字母、数字、点、下划线、连字符
+    strict=False: 用于 get/delete 等仅查询场景，支持中文等 Unicode，仅禁止路径分隔符等特殊字符
+    非法返回错误信息，合法返回 None
+    """
     if not name or not str(name).strip():
         return "集群名称不能为空"
-    if not _CLUSTER_NAME_RE.match(str(name).strip()):
-        return "集群名称只能包含字母、数字、点、下划线、连字符"
+    s = str(name).strip()
+    if strict:
+        if not _CLUSTER_NAME_RE.match(s):
+            return "集群名称只能包含字母、数字、点、下划线、连字符"
+    else:
+        if any(c in s for c in ('/', '\\', ':', '*', '?', '"', '<', '>', '|')):
+            return "集群名称不能包含路径分隔符或特殊字符"
     return None
-
-# 初始化集群配置管理器
-cluster_config = ClusterConfigManager()
 
 # ========================== 集群管理工具 ==========================
 
@@ -50,7 +61,7 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
     Returns:
         导入结果
     """
-    err = _validate_cluster_name(name)
+    err = _validate_cluster_name(name, strict=True)
     if err:
         return json_error(err)
 
@@ -61,7 +72,7 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         try:
             # 验证kubeconfig内容格式
             yaml.safe_load(kubeconfig)
-            kubeconfig_path = cluster_config.save_kubeconfig(name, kubeconfig)
+            kubeconfig_path = get_cluster_config_manager().save_kubeconfig(name, kubeconfig)
         except yaml.YAMLError:
             return json_error("无效的kubeconfig格式")
     
@@ -73,7 +84,7 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         is_default=is_default
     )
     
-    success = cluster_config.add_cluster(cluster_info)
+    success = get_cluster_config_manager().add_cluster(cluster_info)
     log_operation("import_cluster", "import", {"name": name, "is_default": is_default}, success)
 
     if success:
@@ -105,7 +116,7 @@ async def list_clusters() -> str:
     Returns:
         集群列表
     """
-    clusters = cluster_config.list_clusters()
+    clusters = get_cluster_config_manager().list_clusters()
     result = {
         "success": True,
         "clusters": [
@@ -134,7 +145,10 @@ async def get_cluster(name: str) -> str:
     Returns:
         集群配置信息
     """
-    cluster = cluster_config.get_cluster(name)
+    err = _validate_cluster_name(name, strict=False)
+    if err:
+        return json_error(err)
+    cluster = get_cluster_config_manager().get_cluster(name)
     result = {
         "success": True,
         "cluster": {
@@ -159,7 +173,10 @@ async def delete_cluster(name: str) -> str:
     Returns:
         删除结果
     """
-    success = cluster_config.remove_cluster(name)
+    err = _validate_cluster_name(name, strict=False)
+    if err:
+        return json_error(err)
+    success = get_cluster_config_manager().remove_cluster(name)
     log_operation("delete_cluster", "delete", {"name": name}, success)
 
     if success:
@@ -187,10 +204,10 @@ async def set_default_cluster(name: str) -> str:
     Returns:
         设置结果
     """
-    err = _validate_cluster_name(name)
+    err = _validate_cluster_name(name, strict=True)
     if err:
         return json_error(err)
-    success = cluster_config.set_default_cluster(name)
+    success = get_cluster_config_manager().set_default_cluster(name)
     log_operation("set_default_cluster", "update", {"name": name}, success)
 
     if success:
@@ -218,11 +235,11 @@ async def test_cluster_connection(name: str) -> str:
     Returns:
         连接测试结果
     """
-    err = _validate_cluster_name(name)
+    err = _validate_cluster_name(name, strict=True)
     if err:
         return json_error(err)
     from kubernetes import client, config
-    cluster = cluster_config.get_cluster(name)
+    cluster = get_cluster_config_manager().get_cluster(name)
     config.load_kube_config(config_file=cluster.kubeconfig_path)
     v1 = client.CoreV1Api()
     namespaces = v1.list_namespace()
@@ -246,7 +263,7 @@ async def get_default_cluster() -> str:
     Returns:
         默认集群信息
     """
-    default_cluster = cluster_config.get_default_cluster()
+    default_cluster = get_cluster_config_manager().get_default_cluster()
     if default_cluster:
         result = {
             "success": True,
@@ -288,16 +305,18 @@ async def save_kubeconfig(name: str, content: str) -> str:
             return json_error("无效的kubeconfig格式")
     except yaml.YAMLError as e:
         return json_error(f"YAML格式错误: {str(e)}")
-    config_path = cluster_config.save_kubeconfig(name, content)
+    config_path = get_cluster_config_manager().save_kubeconfig(name, content)
     log_operation("save_kubeconfig", "create", {"name": name}, True)
     return json_success({"success": True, "message": f"kubeconfig '{name}' 保存成功", "path": config_path})
 
 def _mask_kubeconfig_sensitive(content: str) -> str:
-    """脱敏 kubeconfig 中的 token、证书等敏感字段"""
+    """脱敏 kubeconfig 中的 token、证书等敏感字段（不修改原始数据）"""
+    import copy
     try:
         data = yaml.safe_load(content)
         if not isinstance(data, dict) or "users" not in data:
             return content
+        data = copy.deepcopy(data)
         for user in data.get("users", []):
             u = user.get("user", {})
             if "token" in u:

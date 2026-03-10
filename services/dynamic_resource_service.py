@@ -142,7 +142,7 @@ class DynamicResourceService:
             raise RuntimeError(f"更新 {kind}/{name} 失败: {e}") from e
 
     def delete_resource(self, api_version: str, kind: str, name: str,
-                        namespace: str = "default", grace_period_seconds: int = None) -> Dict:
+                        namespace: str = "default", grace_period_seconds: Optional[int] = None) -> Dict:
         """删除资源"""
         resource = self._get_resource(api_version, kind)
         if not resource:
@@ -175,5 +175,5 @@ class DynamicResourceService:
     async def update_resource_async(self, body: Dict, namespace: str = "default") -> Dict:
         return await asyncio.to_thread(self.update_resource, body, namespace)
 
-    async def delete_resource_async(self, api_version: str, kind: str, name: str, namespace: str = "default", grace_period_seconds: int = None) -> Dict:
+    async def delete_resource_async(self, api_version: str, kind: str, name: str, namespace: str = "default", grace_period_seconds: Optional[int] = None) -> Dict:
         return await asyncio.to_thread(self.delete_resource, api_version, kind, name, namespace, grace_period_seconds)

@@ -2,6 +2,7 @@
 RBAC管理工具
 提供角色模板、权限分析等RBAC功能
 """
+from typing import Optional
 
 from services.factory import get_k8s_advanced_service
 from utils.decorators import handle_tool_errors
@@ -13,8 +14,8 @@ from . import mcp
 
 @mcp.tool()
 @handle_tool_errors
-async def create_role_template(template_type: str, namespace: str, role_name: str = None,
-                              kubeconfig_path: str = None) -> str:
+async def create_role_template(template_type: str, namespace: str, role_name: Optional[str] = None,
+                              kubeconfig_path: Optional[str] = None) -> str:
     """创建角色模板（统一工具）
     
     Args:
@@ -49,7 +50,7 @@ async def create_role_template(template_type: str, namespace: str, role_name: st
 @mcp.tool()
 @handle_tool_errors
 async def analyze_serviceaccount_permissions(service_account_name: str, namespace: str,
-                                             kubeconfig_path: str = None) -> str:
+                                             kubeconfig_path: Optional[str] = None) -> str:
     """分析ServiceAccount的权限
     
     Args:
@@ -64,7 +65,7 @@ async def analyze_serviceaccount_permissions(service_account_name: str, namespac
 @mcp.tool()
 @handle_tool_errors
 async def check_serviceaccount_permission_conflicts(namespace: str,
-                                                    kubeconfig_path: str = None) -> str:
+                                                    kubeconfig_path: Optional[str] = None) -> str:
     """检查命名空间中ServiceAccount的权限冲突
     
     Args:
@@ -78,7 +79,7 @@ async def check_serviceaccount_permission_conflicts(namespace: str,
 @mcp.tool()
 @handle_tool_errors
 async def list_role_serviceaccounts(role_name: str, namespace: str, role_type: str = "Role",
-                                   kubeconfig_path: str = None) -> str:
+                                   kubeconfig_path: Optional[str] = None) -> str:
     """列出绑定到指定角色的所有ServiceAccount
     
     Args:
@@ -87,6 +88,8 @@ async def list_role_serviceaccounts(role_name: str, namespace: str, role_type: s
         role_type: 角色类型（Role或ClusterRole）
         kubeconfig_path: kubeconfig 文件路径，不指定则使用默认集群
     """
+    if role_type not in ("Role", "ClusterRole"):
+        return json_error("role_type 必须是 Role 或 ClusterRole")
     service = get_k8s_advanced_service(kubeconfig_path)
     result = await service.list_role_serviceaccounts(role_name, namespace, role_type)
     return json_success(result)

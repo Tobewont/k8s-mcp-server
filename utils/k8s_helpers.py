@@ -5,12 +5,12 @@ import base64
 import json
 import yaml
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from config import TIMEZONE_OFFSET_HOURS
 
 
-def parse_secret_data(data: dict) -> dict:
+def parse_secret_data(data: Dict[str, str]) -> Dict[str, Any]:
     """
     将 base64 编码的 Secret data 字段解码为明文，并自动尝试解析 yaml/json 内容。
     返回格式：{key: 明文或解析后的对象}
@@ -41,7 +41,7 @@ def to_local_time_str(dt, tz_offset_hours: Optional[int] = None) -> str:
     if tz_offset_hours is None:
         tz_offset_hours = TIMEZONE_OFFSET_HOURS
     if not dt:
-        return None
+        return ""
     if isinstance(dt, str):
         try:
             dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
