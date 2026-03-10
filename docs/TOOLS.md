@@ -1,5 +1,11 @@
 # k8s-mcp-server 工具清单（40 个）
 
+## 回归测试与备份隔离
+
+回归测试（`python -m tests.regression_test`）中，`backup_namespace` 与 `backup_resource` 的测试会备份到临时目录，测试结束后自动删除，**不影响正式备份目录** `data/backup/`。
+
+---
+
 ## Service 层与动态资源支持
 
 批量操作工具（batch_list/create/update/delete/describe）采用**双层服务**：

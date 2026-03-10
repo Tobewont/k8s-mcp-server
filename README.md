@@ -109,9 +109,18 @@ kubectl apply -f k8s/
 k8s-mcp-server/
 ├── services/
 │   ├── __init__.py
-│   ├── k8s_api_service.py       # Kubernetes API 服务层
-│   ├── k8s_advanced_service.py  # Kubernetes 进阶服务层（批量操作、备份恢复、RBAC、验证）
-│   └── dynamic_resource_service.py  # 动态资源服务（DynamicClient，支持集群所有 API 资源及 CRD）
+│   ├── factory.py               # 服务实例工厂（按 kubeconfig_path 缓存）
+│   ├── k8s_advanced_service.py  # Kubernetes 进阶服务（批量操作、备份恢复、RBAC、验证）
+│   ├── dynamic_resource_service.py  # 动态资源服务（DynamicClient，支持 CRD 及任意 API 资源）
+│   ├── k8s_api/                 # Kubernetes API 服务层（模块化）
+│   │   ├── base.py, cluster_ops.py, pod_ops.py, workload_ops.py
+│   │   ├── jobcronjob_ops.py, networking_storage_ops.py, service_config_ops.py
+│   │   ├── autoscaling_policy_ops.py, rbac_ops.py, interactive_ops.py
+│   │   └── resource_builders.py
+│   └── k8s_advanced/            # 进阶服务逻辑（批量、备份、验证、RBAC）
+│       ├── batch_ops.py, backup_restore.py, validation.py
+│       ├── resource_conversion.py, rbac_advanced.py
+│       └── base.py
 ├── tools/
 │   ├── __init__.py              # FastMCP 实例和工具模块导入
 │   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (5个工具)
@@ -124,8 +133,13 @@ k8s-mcp-server/
 │   ├── __init__.py
 │   ├── cluster_config.py        # 集群配置管理类
 │   ├── context.py               # 上下文管理
-│   ├── fastmcp_custom.py        # 自定义FastMCP类
-│   └── lowlevel.py              # 底层工具函数
+│   ├── fastmcp_custom.py        # 自定义 FastMCP 类
+│   ├── k8s_helpers.py           # K8s 辅助函数
+│   ├── k8s_parsers.py          # 参数解析
+│   ├── param_parsers.py        # 参数解析
+│   ├── operations_logger.py    # 操作日志
+│   ├── backup_paths.py         # 备份路径
+│   └── decorators.py, response.py, mcp_server.py
 ├── k8s/                         # Kubernetes 部署文件
 │   ├── deployment.yaml          # 主要部署配置
 │   ├── service.yaml             # 服务暴露配置
@@ -135,7 +149,12 @@ k8s-mcp-server/
 ├── data/
 │   ├── clusters.json            # 集群配置存储
 │   ├── kubeconfigs/             # kubeconfig 文件存储目录
+│   ├── backup/                  # 备份存储（按集群/命名空间/资源类型层级）
 │   └── copyfiles/               # Pod 文件拷贝本地保存目录
+├── tests/                       # 回归测试
+│   └── regression_test.py       # 同步/异步 44 个用例
+├── docs/
+│   └── TOOLS.md                 # 工具清单文档
 ├── Dockerfile                   # 容器镜像构建文件
 ├── .dockerignore                # Docker 构建排除文件
 ├── config.py                    # 服务配置
@@ -147,13 +166,13 @@ k8s-mcp-server/
 
 服务层采用三层设计，职责分离、便于扩展：
 
-| 服务 | 文件 | 角色 | 实现方式 | 覆盖范围 |
+| 服务 | 位置 | 角色 | 实现方式 | 覆盖范围 |
 |------|------|------|----------|----------|
-| **KubernetesAPIService** | k8s_api_service.py | 底层 API 封装 | 强类型 API（V1Api、AppsV1Api 等） | 内置资源（Pod、Deployment、Service 等） |
+| **KubernetesAPIService** | services/k8s_api/ | 底层 API 封装 | 强类型 API（V1Api、AppsV1Api 等），多 Mixin 模块化 | 内置资源（Pod、Deployment、Service 等） |
 | **DynamicResourceService** | dynamic_resource_service.py | 动态资源操作 | DynamicClient，运行时发现 API | 任意资源（内置 + CRD + 未来新增） |
-| **KubernetesAdvancedService** | k8s_advanced_service.py | 编排与业务层 | 组合上述两者 | 批量操作、备份恢复、验证等 |
+| **KubernetesAdvancedService** | k8s_advanced_service.py + k8s_advanced/ | 编排与业务层 | 组合上述两者及 BatchOps、BackupRestore、Validation 等 Mixin | 批量操作、备份恢复、验证等 |
 
-**调用策略**：批量操作时优先使用预定义方法，若资源类型未命中则 fallback 到 `DynamicResourceService`，从而支持 CephFilesystem、KafkaTopic 等 CRD 及集群中所有可发现的 API 资源。
+**调用策略**：批量操作时优先使用预定义方法，若资源类型未命中则 fallback 到 `DynamicResourceService`，从而支持 CephFilesystem、KafkaTopic 等 CRD 及集群中所有可发现的 API 资源。服务实例通过 `services.factory.get_k8s_api_service()` / `get_k8s_advanced_service()` 获取，按 `kubeconfig_path` 缓存。
 
 ### 架构特点
 
@@ -672,32 +691,21 @@ OPERATIONS_LOG_FILE=./logs/operations.log  # 写操作日志（create/update/del
 
 ```python
 @mcp.tool()
-async def my_new_tool(kubeconfig_path: str = None, namespace: str = None) -> str:
+async def my_new_tool(kubeconfig_path: str = None, namespace: str = "default") -> str:
     """新工具描述"""
     try:
-        k8s_service = KubernetesAPIService()
-        # 自动加载配置：如果没有指定 kubeconfig_path，会自动使用默认集群
-        k8s_service.load_config(kubeconfig_path=kubeconfig_path)
-        
-        # 解析命名空间：如果没有指定，会使用默认集群的命名空间
-        namespace = _resolve_namespace(namespace)
-        
-        # 使用 k8s_service 进行 API 调用
+        from services.factory import get_k8s_api_service
+        from utils.response import json_success, json_error
+        k8s_service = get_k8s_api_service(kubeconfig_path)  # 按 kubeconfig_path 缓存
         result = await k8s_service.some_api_call(namespace=namespace)
-        
-        return json.dumps({
-            "success": True, 
-            "data": result
-        }, ensure_ascii=False, indent=2)
-        
+        return json_success({"data": result})
     except Exception as e:
-        error_result = {"success": False, "error": str(e)}
-        return json.dumps(error_result, ensure_ascii=False, indent=2)
+        return json_error(str(e))
 ```
 
 ### 扩展 API 服务
 
-在 `services/k8s_api_service.py` 中添加新的 API 方法：
+在 `services/k8s_api/` 的相应 Mixin 模块（如 `pod_ops.py`、`workload_ops.py`）中添加新的 API 方法：
 
 ```python
 async def new_api_method(self, param1: str, grace_period_seconds: int = None) -> Dict[str, Any]:
@@ -802,6 +810,20 @@ kubectl logs -f deployment/k8s-mcp-server
 - ✅ 仅适用于 Kubernetes v1.25 及以上版本（即只支持 batch/v1 版本的 CronJob 资源）。
 - ⏫ 如果你的集群版本低于 v1.25，或仍在使用 batch/v1beta1，请升级集群或手动迁移 CronJob 资源。
 
+
+## 🧪 回归测试
+
+```bash
+# 运行全部回归测试（需可用的 K8s 集群）
+python -m tests.regression_test
+
+# 仅运行同步测试（无需集群）
+REGRESSION_SKIP_ASYNC=1 python -m tests.regression_test
+```
+
+- **同步测试**（7 个）：导入、资源构建器、参数解析、kubeconfig 验证、tools 导出等
+- **异步测试**（37 个）：覆盖 40 个 MCP 工具的实际调用，需集群连接
+- **备份测试隔离**：`backup_namespace`、`backup_resource` 的回归测试使用临时目录，测试后自动删除，不影响正式备份数据
 
 ## 🤝 贡献
 
