@@ -3,6 +3,7 @@ Kubernetes 工具集合
 提供集群健康检查、查询功能和基本信息查询功能
 """
 import os
+from typing import Optional
 
 from config import COPYFILES_DIR
 from services.factory import get_k8s_api_service
@@ -17,7 +18,7 @@ from . import mcp
 
 @mcp.tool()
 @handle_tool_errors
-async def get_cluster_info(kubeconfig_path: str = None) -> str:
+async def get_cluster_info(kubeconfig_path: Optional[str] = None) -> str:
     """
     获取Kubernetes集群信息
     
@@ -35,8 +36,9 @@ async def get_cluster_info(kubeconfig_path: str = None) -> str:
 
 @mcp.tool()
 @handle_tool_errors
-async def get_pod_logs(name: str, namespace: str = "default", lines: int = 100, 
-                 container: str = None, previous: bool = False, kubeconfig_path: str = None) -> str:
+async def get_pod_logs(name: str, namespace: str = "default", lines: int = 100,
+                       container: Optional[str] = None, previous: bool = False,
+                       kubeconfig_path: Optional[str] = None) -> str:
     """
     获取Pod的日志
     
@@ -61,8 +63,8 @@ async def get_pod_logs(name: str, namespace: str = "default", lines: int = 100,
 
 @mcp.tool()
 @handle_tool_errors
-async def exec_pod_command(pod_name: str, command: list, namespace: str = "default", 
-                          container: str = None, kubeconfig_path: str = None) -> str:
+async def exec_pod_command(pod_name: str, command: list, namespace: str = "default",
+                          container: Optional[str] = None, kubeconfig_path: Optional[str] = None) -> str:
     """
     在Pod中执行命令
     
@@ -85,9 +87,9 @@ async def exec_pod_command(pod_name: str, command: list, namespace: str = "defau
 
 @mcp.tool()
 @handle_tool_errors
-async def copy_pod_file(pod_name: str, direction: str, source_path: str, dest_path: str = None,
-                        namespace: str = "default", container: str = None,
-                        kubeconfig_path: str = None) -> str:
+async def copy_pod_file(pod_name: str, direction: str, source_path: str, dest_path: Optional[str] = None,
+                        namespace: str = "default", container: Optional[str] = None,
+                        kubeconfig_path: Optional[str] = None) -> str:
     """
     Pod 与本地之间拷贝文件/目录
     
@@ -124,23 +126,32 @@ async def copy_pod_file(pod_name: str, direction: str, source_path: str, dest_pa
 
 @mcp.tool()
 @handle_tool_errors
-async def port_forward(pod_name: str, local_port: int, pod_port: int, 
-                      namespace: str = "default", kubeconfig_path: str = None) -> str:
+async def port_forward(pod_name: str, local_port: int, pod_port: int,
+                      namespace: str = "default", kubeconfig_path: Optional[str] = None,
+                      cluster_name: Optional[str] = None) -> str:
     """
-    Pod端口转发
+    Pod端口转发：在本地端口与 Pod 端口之间建立转发，访问 localhost:local_port 可访问 Pod 服务。
+    
+    生命周期说明：转发在后台运行，工具返回后转发仍在运行；MCP 服务进程退出时自动停止。
+    当前无显式停止接口，需停止时请重启 MCP 服务或等待进程退出。
     
     Args:
         pod_name: Pod名称
         local_port: 本地端口
         pod_port: Pod端口
         namespace: Kubernetes命名空间，默认为default
-        kubeconfig_path: kubeconfig文件路径
+        kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
+        cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
     
     Returns:
-        端口转发结果
+        端口转发结果，含 forward_info.note 说明访问方式
     """
     if not (1 <= local_port <= 65535) or not (1 <= pod_port <= 65535):
         return json_error("local_port 和 pod_port 必须在 1-65535 范围内")
-    k8s_service = get_k8s_api_service(kubeconfig_path)
-    forward_result = await k8s_service.port_forward(pod_name=pod_name, local_port=local_port, pod_port=pod_port, namespace=namespace)
+    from utils.cluster_config import resolve_kubeconfig_path
+    effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
+    k8s_service = get_k8s_api_service(effective_path)
+    forward_result = await k8s_service.port_forward(
+        pod_name=pod_name, local_port=local_port, pod_port=pod_port, namespace=namespace
+    )
     return json_success({"success": True, "pod_name": pod_name, "namespace": namespace, "local_port": local_port, "pod_port": pod_port, "forward_info": forward_result})
