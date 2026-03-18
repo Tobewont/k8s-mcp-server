@@ -204,7 +204,7 @@ async def set_default_cluster(name: str) -> str:
     Returns:
         设置结果
     """
-    err = _validate_cluster_name(name, strict=True)
+    err = _validate_cluster_name(name, strict=False)  # 仅查找已有集群，支持中文名
     if err:
         return json_error(err)
     success = get_cluster_config_manager().set_default_cluster(name)
