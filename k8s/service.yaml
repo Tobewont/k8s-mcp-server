@@ -35,6 +35,7 @@ spec:
     nodePort: 30800  # 可以根据需要调整
   selector:
     app: k8s-mcp-server
+
 ---
 # 可选：如果需要通过Ingress暴露，可以创建Ingress资源
 apiVersion: networking.k8s.io/v1

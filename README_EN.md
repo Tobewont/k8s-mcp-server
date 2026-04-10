@@ -242,8 +242,7 @@ See [k8s/README.md](k8s/README.md) for detailed deployment guide including PVC, 
 ```bash
 SSE_HOST=0.0.0.0                # Server listen address
 SSE_PORT=8000                   # Server port
-DATA_DIR=./data                 # Data root (cluster configs, kubeconfigs, backups)
-LOGS_DIR=./logs                 # Log directory
+DATA_DIR=./data                 # Data root (cluster configs, kubeconfigs, backups, user ops logs)
 LOG_LEVEL=info                  # Log level
 
 # MCP paths

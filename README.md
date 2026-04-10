@@ -508,7 +508,6 @@ docker run -d \
   -e SSE_PORT=8000 \
   -e LOG_LEVEL=INFO \
   -e DATA_DIR=/app/data \
-  -e LOGS_DIR=/app/logs \
   k8s-mcp-server:latest
 ```
 
@@ -530,21 +529,15 @@ kubectl get svc k8s-mcp-server
 - **Deployment**: 主要应用部署，支持数据持久化
 - **Service**: 服务暴露，支持 ClusterIP、NodePort、Ingress 方式
 - **ConfigMap**: 环境变量和配置管理
-- **PersistentVolumeClaim**: 数据和日志持久化
-- **RBAC**: 完整的权限配置
+- **PersistentVolumeClaim**: 数据持久化（集群配置、kubeconfig、备份、用户操作日志）
 
 ### 数据持久化
 
 ```yaml
-# 数据存储卷
+# 数据存储卷（含集群配置、kubeconfig、备份、用户操作日志等）
 - name: data-volume
   persistentVolumeClaim:
     claimName: k8s-mcp-server-data
-
-# 日志存储卷
-- name: logs-volume
-  persistentVolumeClaim:
-    claimName: k8s-mcp-server-logs
 ```
 
 ### 健康检查
@@ -574,7 +567,6 @@ SSE_PORT=8000
 
 # 数据存储目录（自动创建）
 DATA_DIR=./data                 # 集群配置、kubeconfig、备份等数据根目录
-LOGS_DIR=./logs
 
 # MCP 路径配置
 MCP_MESSAGE_PATH=/mcp/k8s-server/message/
@@ -870,7 +862,7 @@ kubectl logs -f deployment/k8s-mcp-server
 - ✅ **35 个工具函数**：涵盖所有主要 Kubernetes 资源（含 CRD 动态发现）
 - ✅ **优雅删除支持**：部分删除函数支持 `grace_period_seconds` 参数
 - ✅ **容器化支持**：提供 Docker 和 Kubernetes 部署
-- ✅ **数据持久化**：支持配置、日志及 Pod 拷贝文件（data/copyfiles）的持久化存储
+- ✅ **数据持久化**：支持配置、用户操作日志及 Pod 拷贝文件（data/copyfiles）的持久化存储
 - ✅ **健康检查**：提供完整的健康检查机制
 - ✅ **多集群管理**：支持多集群配置和快速切换
 - ✅ **批量操作**：支持集群所有可发现 API 资源的批量操作，包含事务回滚

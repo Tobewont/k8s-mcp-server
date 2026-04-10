@@ -36,7 +36,6 @@ atexit.register(_cleanup_regression_tmp)
 # 必须在任何使用 config 的模块导入前 patch
 import config
 config.BACKUP_DIR = os.path.join(_REGRESSION_TMP, "backup")
-config.LOGS_DIR = os.path.join(_REGRESSION_TMP, "logs")
 
 
 

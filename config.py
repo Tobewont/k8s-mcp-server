@@ -8,7 +8,6 @@ from typing import Optional
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _env_data = os.getenv("MCP_DATA_DIR") or os.getenv("DATA_DIR")
 DATA_DIR = os.path.abspath(_env_data) if _env_data else os.path.join(_ROOT, "data")
-LOGS_DIR = os.path.join(_ROOT, "logs")
 
 # 备份目录
 BACKUP_DIR = os.path.join(DATA_DIR, "backup")
@@ -57,7 +56,6 @@ def get_user_data_root(user_id: Optional[str]) -> str:
 def ensure_dirs() -> None:
     """确保数据目录存在，在工具模块加载时调用"""
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(LOGS_DIR, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
     if MCP_AUTH_ENABLED:
         os.makedirs(os.path.join(DATA_DIR, "auth"), exist_ok=True)
@@ -66,7 +64,6 @@ def ensure_dirs() -> None:
 
 # 日志配置
 LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
-LOG_FILE = os.path.join(LOGS_DIR, "k8s-mcp-server.log")
 
 # SSE服务器配置
 SSE_HOST = os.getenv("SSE_HOST", "0.0.0.0")

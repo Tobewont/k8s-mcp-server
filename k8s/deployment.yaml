@@ -30,6 +30,19 @@ spec:
         envFrom:
         - configMapRef:
             name: k8s-mcp-server-config
+        # ---- 认证配置（启用多租户时取消注释，同时取消 configmap.yaml 中的认证行） ----
+        # env:
+        # - name: MCP_JWT_SECRET
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: k8s-mcp-server-auth
+        #       key: MCP_JWT_SECRET
+        # - name: MCP_BOOTSTRAP_ADMIN_JWT
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: k8s-mcp-server-auth
+        #       key: MCP_BOOTSTRAP_ADMIN_JWT
+        #       optional: true
         resources:
           requests:
             cpu: 100m
@@ -54,14 +67,9 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/data
-        - name: logs
-          mountPath: /app/logs
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: k8s-mcp-server-data
-      - name: logs
-        persistentVolumeClaim:
-          claimName: k8s-mcp-server-logs
       restartPolicy: Always
       terminationGracePeriodSeconds: 30

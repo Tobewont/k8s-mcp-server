@@ -43,7 +43,7 @@ kubectl apply -f k8s/pvc.yaml
 # 2. 创建 ConfigMap（配置管理）
 kubectl apply -f k8s/configmap.yaml
 
-# 3. 如果需要通过secret管理kubeconfig, 创建 Secret（kubeconfig）
+# 3. 如需启用认证，先编辑 secret.yaml 填入 JWT 密钥，然后：
 # kubectl apply -f k8s/secret.yaml
 
 # 4. 创建 Deployment
@@ -73,10 +73,9 @@ kubectl get pvc
 
 ### 数据持久化
 
-项目使用两个 PersistentVolumeClaim 来实现数据持久化：
+项目使用 PersistentVolumeClaim 来实现数据持久化：
 
-- **k8s-mcp-server-data** (5Gi): 存储集群配置、kubeconfig 文件等数据
-- **k8s-mcp-server-logs** (2Gi): 存储应用日志
+- **k8s-mcp-server-data** (5Gi): 存储集群配置、kubeconfig 文件、备份数据、用户操作日志等
 
 ### 权限配置
 
@@ -97,38 +96,55 @@ SSE_HOST: "0.0.0.0"          # 服务监听地址
 SSE_PORT: "8000"             # 服务端口
 LOG_LEVEL: "INFO"            # 日志级别
 DATA_DIR: "/app/data"        # 数据目录
-LOGS_DIR: "/app/logs"        # 日志目录
 ```
 
 ### 认证配置（可选）
 
-启用 JWT 多租户认证时，需额外配置 Secret 和环境变量：
+启用 JWT 多租户认证时，需要三步操作：
+
+#### 步骤 1：准备 Secret
+
+编辑 `k8s/secret.yaml`，将 `MCP_JWT_SECRET` 替换为高强度随机字符串：
 
 ```bash
-# 1. 创建 JWT Secret
-kubectl create secret generic k8s-mcp-server-auth \
-  --from-literal=MCP_JWT_SECRET='your-strong-secret-key' \
-  --from-literal=MCP_BOOTSTRAP_ADMIN_JWT='eyJhbGci...'
-
-# 2. 或使用 mcp-admin 工具预生成管理员 Token
-MCP_JWT_SECRET=your-strong-secret-key mcp-admin bootstrap
+# 生成随机密钥
+openssl rand -base64 32
 ```
 
-在 Deployment 中引用认证相关环境变量：
+如需预置管理员 Token，先在本地生成后填入：
 
-```yaml
-env:
-  - name: MCP_AUTH_ENABLED
-    value: "true"
-  - name: MCP_JWT_SECRET
-    valueFrom:
-      secretKeyRef:
-        name: k8s-mcp-server-auth
-        key: MCP_JWT_SECRET
-  - name: MCP_JWT_ALGORITHM
-    value: "HS256"
-  - name: MCP_ADMIN_API_PREFIX
-    value: "/admin"
+```bash
+MCP_JWT_SECRET=your-strong-secret-key mcp-admin bootstrap
+# 将输出的 Token 填入 secret.yaml 的 MCP_BOOTSTRAP_ADMIN_JWT 字段
+```
+
+然后创建 Secret：
+
+```bash
+kubectl apply -f k8s/secret.yaml
+```
+
+> 也可以不使用 `secret.yaml`，通过命令行创建：
+> ```bash
+> kubectl create secret generic k8s-mcp-server-auth \
+>   --from-literal=MCP_JWT_SECRET='your-strong-secret-key'
+> ```
+
+#### 步骤 2：取消 ConfigMap 中的认证配置注释
+
+编辑 `k8s/configmap.yaml`，取消认证相关行的注释（`MCP_AUTH_ENABLED`、`MCP_JWT_ALGORITHM` 等）。
+
+#### 步骤 3：取消 Deployment 中的 env 注释
+
+编辑 `k8s/deployment.yaml`，取消 `env` 段的注释，使 Pod 能从 Secret 中读取 `MCP_JWT_SECRET`。
+
+#### 应用变更
+
+```bash
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
+kubectl apply -f k8s/deployment.yaml
+# Pod 会自动滚动更新
 ```
 
 启用认证后：
@@ -228,8 +244,8 @@ spec:
 # 查看实时日志
 kubectl logs -l app=k8s-mcp-server -f
 
-# 查看持久化日志
-kubectl exec -it $(kubectl get pods -l app=k8s-mcp-server -o jsonpath='{.items[0].metadata.name}') -- ls -la /app/logs/
+# 查看用户操作日志
+kubectl exec -it $(kubectl get pods -l app=k8s-mcp-server -o jsonpath='{.items[0].metadata.name}') -- ls -la /app/data/users/
 ```
 
 ### 健康检查
@@ -316,9 +332,9 @@ kubectl delete deployment k8s-mcp-server
 kubectl delete service k8s-mcp-server k8s-mcp-server-external
 kubectl delete ingress k8s-mcp-server-ingress
 kubectl delete configmap k8s-mcp-server-config
-kubectl delete pvc k8s-mcp-server-data k8s-mcp-server-logs
+kubectl delete pvc k8s-mcp-server-data
 
-# 如果手动创建了认证 Secret，也需一并清理
+# 如果启用了认证，一并清理 Secret
 # kubectl delete secret k8s-mcp-server-auth
 ```
 
