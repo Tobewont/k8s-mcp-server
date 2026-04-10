@@ -65,15 +65,27 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         return json_error(err)
 
     # 判断kubeconfig是文件路径还是内容
-    kubeconfig_path = kubeconfig
-    if not os.path.exists(kubeconfig):
-        # 如果不是文件路径，则认为是内容，需要先保存到文件
+    kubeconfig_content = kubeconfig
+    if os.path.isfile(kubeconfig):
         try:
-            # 验证kubeconfig内容格式
-            yaml.safe_load(kubeconfig)
-            kubeconfig_path = get_cluster_config_manager().save_kubeconfig(name, kubeconfig)
-        except yaml.YAMLError:
-            return json_error("无效的kubeconfig格式")
+            with open(kubeconfig, 'r', encoding='utf-8') as f:
+                kubeconfig_content = f.read()
+        except (IOError, OSError) as e:
+            return json_error(f"读取 kubeconfig 文件失败: {e}")
+
+    try:
+        parsed = yaml.safe_load(kubeconfig_content)
+    except yaml.YAMLError:
+        return json_error("无效的 kubeconfig 格式（YAML 解析失败）")
+
+    if not isinstance(parsed, dict):
+        return json_error("无效的 kubeconfig：内容必须是 YAML 字典，而非纯字符串")
+    required_fields = ("clusters", "contexts", "users")
+    missing = [f for f in required_fields if f not in parsed]
+    if missing:
+        return json_error(f"无效的 kubeconfig：缺少必需字段 {', '.join(missing)}")
+
+    kubeconfig_path = get_cluster_config_manager().save_kubeconfig(name, kubeconfig_content)
     
     cluster_info = ClusterInfo(
         name=name,
@@ -396,6 +408,8 @@ async def get_kubeconfig_info(name: Optional[str] = None, content: Optional[str]
         config_data = yaml.safe_load(raw)
     except yaml.YAMLError as e:
         return json_error(f"YAML格式错误: {str(e)}")
+    if not isinstance(config_data, dict):
+        return json_error("kubeconfig 文件内容损坏：不是有效的 YAML 字典（可能需要重新导入集群）")
     stat = os.stat(config_path)
     clusters = [{"name": c.get('name', ''), "server": c.get('cluster', {}).get('server', '')} for c in config_data.get('clusters', [])]
     contexts = [{"name": ctx.get('name', ''), "cluster": ctx.get('context', {}).get('cluster', ''), "user": ctx.get('context', {}).get('user', ''), "namespace": ctx.get('context', {}).get('namespace', 'default')} for ctx in config_data.get('contexts', [])]
