@@ -786,10 +786,12 @@ class RbacOpsMixin:
             subjects_list = []
             if subjects:
                 for subject in subjects:
+                    kind = subject.get("kind")
+                    default_api_group = "" if kind == "ServiceAccount" else "rbac.authorization.k8s.io"
                     subject_obj = client.RbacV1Subject(
-                        kind=subject.get("kind"),
+                        kind=kind,
                         name=subject.get("name"),
-                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
+                        api_group=subject.get("api_group", default_api_group),
                         namespace=subject.get("namespace")
                     )
                     subjects_list.append(subject_obj)
@@ -1029,10 +1031,12 @@ class RbacOpsMixin:
             subjects_list = []
             if subjects:
                 for subject in subjects:
+                    kind = subject.get("kind")
+                    default_api_group = "" if kind == "ServiceAccount" else "rbac.authorization.k8s.io"
                     subject_obj = client.RbacV1Subject(
-                        kind=subject.get("kind"),
+                        kind=kind,
                         name=subject.get("name"),
-                        api_group=subject.get("api_group", "rbac.authorization.k8s.io"),
+                        api_group=subject.get("api_group", default_api_group),
                         namespace=subject.get("namespace")
                     )
                     subjects_list.append(subject_obj)

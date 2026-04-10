@@ -21,5 +21,3 @@ data:
 
   # 日志配置
   LOG_LEVEL: "info"
-  LOG_FILE: "/app/logs/k8s-mcp-server.log"
-  OPERATIONS_LOG_FILE: "/app/logs/operations.log"

@@ -1,3 +1,4 @@
+import copy
 from typing import Dict, List, Any, Optional
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
@@ -483,10 +484,15 @@ class JobCronJobOpsMixin:
                         namespace=namespace,
                         body=resource
                     )
-                except:
-                    # 回退到 batch/v1beta1 API
-                    resource_copy = resource.copy()
+                except ApiException as e:
+                    # 部分集群仅在 batch/v1beta1 暴露 CronJob（batch/v1 无 cronjobs 资源会 404）
+                    if e.status != 404 or not self.batch_v1beta1_api:
+                        raise
+                    resource_copy = copy.deepcopy(resource)
                     resource_copy["apiVersion"] = "batch/v1beta1"
+                    spec = resource_copy.get("spec") or {}
+                    spec.pop("timeZone", None)
+                    resource_copy["spec"] = spec
                     response = self.batch_v1beta1_api.create_namespaced_cron_job(
                         namespace=namespace,
                         body=resource_copy

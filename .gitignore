@@ -118,11 +118,8 @@ data/clusters.json
 # 本地配置文件
 config.local.py 
 
-# 本地备份文件
-data/backup/
-
-# 本地拷贝文件
-data/copyfiles/
+# 本地文件
+data/
 
 # cursor
 .cursorindexingignore

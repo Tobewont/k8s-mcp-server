@@ -103,27 +103,19 @@ class BackupRestoreMixin:
         }
 
         try:
-            namespaces = await self.k8s_service.list_namespaces()
-            namespace_obj = None
-            for ns in namespaces:
-                if ns.get("name") == namespace:
-                    namespace_obj = ns
-                    break
-            if namespace_obj:
-                namespace_resource = {
-                    "apiVersion": "v1",
-                    "kind": "Namespace",
-                    "metadata": {
-                        "name": namespace_obj.get("name"),
-                        "labels": namespace_obj.get("labels", {}),
-                        "annotations": namespace_obj.get("annotations", {})
-                    }
+            ns_info = await self.k8s_service.get_namespace(namespace)
+            namespace_resource = {
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "metadata": {
+                    "name": ns_info.get("name"),
+                    "labels": ns_info.get("labels", {}),
+                    "annotations": ns_info.get("annotations", {})
                 }
-                backup_data["namespace"] = self._sanitize_for_backup(namespace_resource)
-            else:
-                logger.warning("无法找到命名空间 %s", namespace)
+            }
+            backup_data["namespace"] = self._sanitize_for_backup(namespace_resource)
         except Exception as e:
-            logger.warning("备份命名空间 %s 失败: %s", namespace, e)
+            logger.warning("备份命名空间元数据 %s 失败（可能权限不足）: %s", namespace, e)
 
         resource_types = [
             "deployments", "statefulsets", "daemonsets",
@@ -235,8 +227,11 @@ class BackupRestoreMixin:
                 results["total"] += 1
                 logger.info("成功恢复命名空间: %s", original_namespace)
             except Exception as e:
-                if "already exists" in str(e).lower() or "conflict" in str(e).lower():
+                err_str = str(e).lower()
+                if "already exists" in err_str or "conflict" in err_str:
                     logger.info("命名空间 %s 已存在，跳过创建", original_namespace)
+                elif "forbidden" in err_str:
+                    logger.warning("无权创建命名空间 %s（需集群级 namespaces create），跳过", original_namespace)
                 else:
                     results["failed"].append({"resource": f"namespace/{original_namespace}", "error": str(e)})
                     logger.warning("恢复命名空间失败: %s", e)

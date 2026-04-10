@@ -15,7 +15,7 @@ Kubernetes API 服务拆分为多个模块，便于维护。
 | `rbac_ops.py` | ServiceAccount、Role、ClusterRole、RoleBinding、ClusterRoleBinding |
 | `autoscaling_policy_ops.py` | HPA、NetworkPolicy、ResourceQuota |
 | `interactive_ops.py` | exec_pod_command、copy_from_pod、copy_to_pod、port_forward |
-| `cluster_ops.py` | Node、Namespace、Event、check_api_health、get_cluster_info、metrics、drain_node |
+| `cluster_ops.py` | Node、Namespace、Event、check_api_health、get_cluster_info、metrics、drain_node、cordon_node、uncordon_node |
 
 ## 使用
 

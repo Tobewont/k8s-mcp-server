@@ -24,7 +24,7 @@ from . import batch_tools        # 批量资源管理（核心）
 from . import cluster_tools      # 集群和配置管理
 from . import diagnostic_tools   # 诊断工具
 from . import backup_tools       # 备份工具
-from . import rbac_tools         # RBAC 工具
+from . import auth_tools         # 认证与用户管理（whoami / admin_manage_users / admin_manage_profiles）
 
 __all__ = [
     'k8s_tools',
@@ -32,7 +32,7 @@ __all__ = [
     'cluster_tools', 
     'diagnostic_tools',
     'backup_tools',
-    'rbac_tools',
+    'auth_tools',
     'mcp',
     'app'
 ]

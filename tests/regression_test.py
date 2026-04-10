@@ -37,8 +37,8 @@ atexit.register(_cleanup_regression_tmp)
 import config
 config.BACKUP_DIR = os.path.join(_REGRESSION_TMP, "backup")
 config.LOGS_DIR = os.path.join(_REGRESSION_TMP, "logs")
-config.OPERATIONS_LOG_FILE = os.path.join(config.LOGS_DIR, "operations.log")
-config.COPYFILES_DIR = os.path.join(_REGRESSION_TMP, "copyfiles")
+
+
 
 # 异步单测超时（秒），集群不可达时避免无限挂起
 ASYNC_TEST_TIMEOUT = int(os.getenv("REGRESSION_ASYNC_TIMEOUT", "60"))
@@ -103,9 +103,9 @@ def test_param_parsers():
 
 
 def test_validate_kubeconfig_tool():
-    """cluster_tools.validate_kubeconfig（无需集群）"""
-    from tools.cluster_tools import validate_kubeconfig
-    result = asyncio.run(validate_kubeconfig(content='{"apiVersion":"v1","kind":"Config","clusters":[]}'))
+    """cluster_tools.get_kubeconfig_info(content=...)（无需集群）"""
+    from tools.cluster_tools import get_kubeconfig_info
+    result = asyncio.run(get_kubeconfig_info(content='{"apiVersion":"v1","kind":"Config","clusters":[]}'))
     data = json.loads(result)
     assert "success" in data or "valid" in data
     return "OK"
@@ -274,15 +274,6 @@ async def test_list_clusters():
     return "OK"
 
 
-async def test_get_default_cluster():
-    """cluster_tools.get_default_cluster"""
-    from tools.cluster_tools import get_default_cluster
-    result = await get_default_cluster()
-    data = json.loads(result)
-    assert "success" in data
-    return "OK"
-
-
 async def test_list_kubeconfigs():
     """cluster_tools.list_kubeconfigs"""
     from tools.cluster_tools import list_kubeconfigs
@@ -292,51 +283,15 @@ async def test_list_kubeconfigs():
     return "OK"
 
 
-async def test_check_serviceaccount_permission_conflicts():
-    """rbac_tools.check_serviceaccount_permission_conflicts"""
-    from tools.rbac_tools import check_serviceaccount_permission_conflicts
-    result = await check_serviceaccount_permission_conflicts(namespace="default")
-    data = json.loads(result)
-    assert "error" not in data
-    assert "conflicts" in data or "namespace" in data
-    return "OK"
-
-
-async def test_list_role_serviceaccounts():
-    """rbac_tools.list_role_serviceaccounts"""
-    from tools.rbac_tools import list_role_serviceaccounts
-    from services.factory import get_k8s_api_service
-    roles = await get_k8s_api_service().list_roles(namespace="default")
-    if not roles:
-        return "SKIP (no roles)"
-    result = await list_role_serviceaccounts(role_name=roles[0]["name"], namespace="default")
-    data = json.loads(result)
-    assert "error" not in data
-    assert "service_accounts" in data or "role_name" in data
-    return "OK"
-
-
-async def test_analyze_serviceaccount_permissions():
-    """rbac_tools.analyze_serviceaccount_permissions"""
-    from tools.rbac_tools import analyze_serviceaccount_permissions
-    result = await analyze_serviceaccount_permissions(
-        service_account_name="default", namespace="default"
-    )
-    data = json.loads(result)
-    assert "error" not in data
-    assert "permissions" in data or "service_account" in data
-    return "OK"
-
-
 async def test_get_cluster():
-    """cluster_tools.get_cluster"""
-    from tools.cluster_tools import list_clusters, get_cluster
+    """cluster_tools.list_clusters(name=...)"""
+    from tools.cluster_tools import list_clusters
     list_result = await list_clusters()
     list_data = json.loads(list_result)
     if not list_data.get("clusters"):
         return "SKIP (no clusters)"
     name = list_data["clusters"][0]["name"]
-    result = await get_cluster(name=name)
+    result = await list_clusters(name=name)
     data = json.loads(result)
     assert data.get("success") is True and "cluster" in data
     return "OK"
@@ -492,35 +447,19 @@ async def test_get_kubeconfig_info():
 
 # ==================== k8s_tools 扩展 ====================
 
-async def test_copy_pod_file():
-    """k8s_tools.copy_pod_file (from_pod)"""
-    from tools.k8s_tools import copy_pod_file
+async def test_copy_pod_files():
+    """k8s_tools.copy_pod_files (from_pod)"""
+    from tools.k8s_tools import copy_pod_files
     from services.factory import get_k8s_api_service
     pods = await get_k8s_api_service().list_pods(namespace="default")
     if not pods:
         return "SKIP (no pods)"
-    result = await copy_pod_file(
+    result = await copy_pod_files(
         pod_name=pods[0]["name"], direction="from_pod",
-        source_path="/etc/hostname", namespace="default"
+        pod_paths="/etc/hostname", namespace="default"
     )
     data = json.loads(result)
-    assert data.get("success") is True and "local_path" in data
-    return "OK"
-
-
-# ==================== rbac_tools 扩展 ====================
-
-async def test_create_role_template():
-    """rbac_tools.create_role_template"""
-    import time
-    from tools.rbac_tools import create_role_template
-    role_name = f"regression-test-readonly-{int(time.time())}"
-    result = await create_role_template(
-        template_type="readonly", namespace="default",
-        role_name=role_name
-    )
-    data = json.loads(result)
-    assert data.get("success") is True or "已存在" in str(data.get("error", ""))
+    assert data.get("success") is True and "files" in data
     return "OK"
 
 
@@ -528,8 +467,8 @@ async def test_create_role_template():
 
 def test_all_tools_importable():
     """验证所有 tools 模块可导入"""
-    from tools import k8s_tools, batch_tools, cluster_tools, diagnostic_tools, backup_tools, rbac_tools
-    tools_modules = [k8s_tools, batch_tools, cluster_tools, diagnostic_tools, backup_tools, rbac_tools]
+    from tools import k8s_tools, batch_tools, cluster_tools, diagnostic_tools, backup_tools, auth_tools
+    tools_modules = [k8s_tools, batch_tools, cluster_tools, diagnostic_tools, backup_tools, auth_tools]
     for m in tools_modules:
         assert m is not None
     return "OK"
@@ -537,22 +476,22 @@ def test_all_tools_importable():
 
 def test_tools_have_expected_attrs():
     """验证各 tools 模块导出预期函数"""
-    from tools import k8s_tools, batch_tools, cluster_tools, diagnostic_tools, backup_tools, rbac_tools
+    from tools import k8s_tools, batch_tools, cluster_tools, diagnostic_tools, backup_tools, auth_tools
     expected = {
-        "k8s_tools": ["get_cluster_info", "get_pod_logs", "exec_pod_command", "copy_pod_file", "port_forward"],
+        "k8s_tools": ["get_cluster_info", "get_pod_logs", "exec_pod_command", "copy_pod_files", "port_forward"],
         "batch_tools": ["batch_list_resources", "batch_create_resources", "batch_update_resources", "batch_delete_resources",
                         "batch_describe_resources", "batch_restart_resources", "batch_rollout_resources", "batch_top_resources"],
-        "cluster_tools": ["list_clusters", "get_cluster", "get_default_cluster", "list_kubeconfigs", "validate_kubeconfig",
+        "cluster_tools": ["list_clusters", "list_kubeconfigs",
                           "import_cluster", "delete_cluster", "set_default_cluster", "test_cluster_connection",
-                          "save_kubeconfig", "load_kubeconfig", "delete_kubeconfig", "get_kubeconfig_info"],
-        "diagnostic_tools": ["check_cluster_health", "check_node_health", "check_pod_health", "drain_node",
+                          "load_kubeconfig", "delete_kubeconfig", "get_kubeconfig_info"],
+        "diagnostic_tools": ["check_cluster_health", "check_node_health", "check_pod_health", "manage_node",
                              "get_cluster_resource_usage", "get_cluster_events"],
         "backup_tools": ["backup_namespace", "backup_resource", "restore_from_backup", "list_backups"],
-        "rbac_tools": ["create_role_template", "analyze_serviceaccount_permissions", "check_serviceaccount_permission_conflicts", "list_role_serviceaccounts"],
+        "auth_tools": ["whoami", "admin_manage_users", "admin_manage_profiles"],
     }
     for mod_name, attrs in expected.items():
         mod = {"k8s_tools": k8s_tools, "batch_tools": batch_tools, "cluster_tools": cluster_tools,
-               "diagnostic_tools": diagnostic_tools, "backup_tools": backup_tools, "rbac_tools": rbac_tools}[mod_name]
+               "diagnostic_tools": diagnostic_tools, "backup_tools": backup_tools, "auth_tools": auth_tools}[mod_name]
         for attr in attrs:
             assert hasattr(mod, attr), f"{mod_name}.{attr} not found"
     return "OK"
@@ -606,12 +545,8 @@ async def run_async():
         ("get_cluster_events", test_get_cluster_events),
         ("list_backups", test_list_backups),
         ("list_clusters", test_list_clusters),
-        ("get_default_cluster", test_get_default_cluster),
         ("list_kubeconfigs", test_list_kubeconfigs),
-        ("check_serviceaccount_permission_conflicts", test_check_serviceaccount_permission_conflicts),
-        ("list_role_serviceaccounts", test_list_role_serviceaccounts),
-        ("analyze_serviceaccount_permissions", test_analyze_serviceaccount_permissions),
-        ("get_cluster", test_get_cluster),
+        ("list_clusters(name=...)", test_get_cluster),
         ("batch_list_all", test_batch_list_all),
         ("ClusterConfigManager 单例", test_cluster_config_singleton),
         ("batch_create_resources", test_batch_create_resources),
@@ -624,8 +559,7 @@ async def run_async():
         ("test_cluster_connection", test_test_cluster_connection),
         ("load_kubeconfig", test_load_kubeconfig),
         ("get_kubeconfig_info", test_get_kubeconfig_info),
-        ("copy_pod_file", test_copy_pod_file),
-        ("create_role_template", test_create_role_template),
+        ("copy_pod_files", test_copy_pod_files),
     ]:
         try:
             # 直接运行。注：run_in_executor+asyncio.run() 在子线程中可能死锁导致卡住；

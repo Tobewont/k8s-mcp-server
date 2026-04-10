@@ -2,6 +2,8 @@
 
 ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![k8s-version](https://img.shields.io/badge/k8s-v1.25%2B-orange) ![license](https://img.shields.io/badge/license-MIT-green)
 
+**[English](README_EN.md)** | 中文
+
 基于 FastMCP 框架的 Kubernetes MCP Server，提供完整的 Kubernetes API 操作功能。
 
 ## 🔥 主要特性
@@ -9,7 +11,8 @@
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
 - **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
-- **全面的 K8s 操作**：支持 40 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **全面的 K8s 操作**：支持 35 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
+- **多租户认证**：可选 JWT 认证，支持多用户数据隔离、权限 Profile 分级、Tool 可见性过滤
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
 - **双重传输协议**：同时支持 SSE 和 Stdio 两种传输方式
@@ -83,7 +86,9 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 }
 ```
 
-配置后重启 Cursor 或执行 **Developer: Reload Window**，即可在 MCP 工具列表中看到 40 个工具。
+配置后重启 Cursor 或执行 **Developer: Reload Window**，即可在 MCP 工具列表中看到工具。
+
+> 未启用认证时可见 32 个工具；启用认证后 admin 角色可见全部 35 个，viewer 13 个、developer 21 个、operator 30 个。
 
 ### 容器化部署
 
@@ -123,17 +128,24 @@ k8s-mcp-server/
 │       └── base.py
 ├── tools/
 │   ├── __init__.py              # FastMCP 实例和工具模块导入
-│   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (5个工具)
-│   ├── cluster_tools.py         # 多集群配置管理 (13个工具)
-│   ├── diagnostic_tools.py      # 集群诊断工具 (6个工具)
-│   ├── batch_tools.py           # 批量操作工具 (8个工具)
-│   ├── backup_tools.py          # 备份恢复工具 (4个工具)
-│   └── rbac_tools.py            # RBAC管理工具 (4个工具)
+│   ├── k8s_tools.py             # 核心 K8s 资源管理工具 (5个)
+│   ├── cluster_tools.py         # 多集群配置管理 (9个)
+│   ├── diagnostic_tools.py      # 集群诊断工具 (6个)
+│   ├── batch_tools.py           # 批量操作工具 (8个)
+│   ├── backup_tools.py          # 备份恢复工具 (4个)
+│   └── auth_tools.py            # 认证与用户管理 (3个，仅认证模式可见)
 ├── utils/
 │   ├── __init__.py
-│   ├── cluster_config.py        # 集群配置管理类
+│   ├── cluster_config.py        # 集群配置管理类（支持多租户隔离）
 │   ├── context.py               # 上下文管理
-│   ├── fastmcp_custom.py        # 自定义 FastMCP 类
+│   ├── fastmcp_custom.py        # 自定义 FastMCP（含 Tool 可见性过滤）
+│   ├── auth_context.py          # 请求级用户上下文（contextvars）
+│   ├── jwt_service.py           # JWT 签发/验证
+│   ├── jwt_middleware.py        # ASGI JWT 认证中间件
+│   ├── permission_profiles.py   # 权限 Profile 管理（内置 + 自定义）
+│   ├── token_store.py           # JWT 签发记录持久化
+│   ├── revocation_store.py      # JWT 撤销列表
+│   ├── admin_routes.py          # 管理 API 路由
 │   ├── k8s_helpers.py           # K8s 辅助函数
 │   ├── k8s_parsers.py          # 参数解析
 │   ├── param_parsers.py        # 参数解析
@@ -152,7 +164,7 @@ k8s-mcp-server/
 │   ├── backup/                  # 备份存储（按集群/命名空间/资源类型层级）
 │   └── copyfiles/               # Pod 文件拷贝本地保存目录
 ├── tests/                       # 回归测试
-│   └── regression_test.py       # 同步/异步 44 个用例
+│   └── regression_test.py       # 同步/异步 37 个用例
 ├── docs/
 │   └── TOOLS.md                 # 工具清单文档
 ├── Dockerfile                   # 容器镜像构建文件
@@ -190,14 +202,22 @@ k8s-mcp-server/
 
 | 分类 | 模块 | 工具数 | 说明 |
 |------|------|--------|------|
-| 核心工具 | k8s_tools | 5 | 集群信息、Pod 日志（含 previous）、执行命令、Pod 文件拷贝、端口转发 |
-| 集群管理 | cluster_tools | 13 | 集群导入/切换、kubeconfig 管理 |
-| 诊断工具 | diagnostic_tools | 6 | 集群/节点/Pod 健康、资源使用、事件、节点排水 |
-| 批量操作 | batch_tools | 8 | 批量增删改查、重启、发布操作、top 资源；支持集群所有 API 资源（含 CRD），`resource_types="all"` 可发现可用资源 |
+| 认证管理 | auth_tools | 3 | whoami、用户/Token 管理、权限 Profile 管理（仅认证模式可见） |
+| 核心工具 | k8s_tools | 5 | 集群信息、Pod 日志（含 previous）、执行命令、Pod 文件拷贝、端口转发（含启停管理） |
+| 集群管理 | cluster_tools | 9 | 集群导入/切换、kubeconfig 管理 |
+| 诊断工具 | diagnostic_tools | 6 | 集群/节点/Pod 健康、资源使用、事件、节点管理（drain/cordon/uncordon） |
+| 批量操作 | batch_tools | 8 | 批量增删改查、重启、发布操作、top 资源；支持集群所有 API 资源（含 CRD） |
 | 备份恢复 | backup_tools | 4 | 命名空间/资源备份与恢复 |
-| RBAC 管理 | rbac_tools | 4 | 角色模板、权限分析、冲突检查 |
 
-**说明**：`list_clusters` 列出已导入的集群注册信息；`list_kubeconfigs` 列出 `data/kubeconfigs/` 目录下保存的 kubeconfig 文件。
+**说明**：`list_clusters` 查看已导入的集群注册信息（省略 `name` 列出全部，指定 `name` 返回单个集群详情）；`list_kubeconfigs` 列出 `data/kubeconfigs/` 目录下保存的 kubeconfig 文件。
+
+### 认证与用户管理 (auth_tools.py)
+
+> 仅在 `MCP_AUTH_ENABLED=true` 时可见。
+
+- `whoami()` - 查看当前用户身份、角色、Token 有效期、已授权的集群与权限
+- `admin_manage_users(action, ...)` - 用户与 Token 管理（admin 全功能；operator 限 viewer/developer 权限和 user 角色 token）
+- `admin_manage_profiles(action, ...)` - 权限 Profile 模板管理（查看/创建/更新/删除自定义 profile，仅 admin）
 
 ### K8s 资源管理 (batch_tools.py)
 
@@ -213,39 +233,32 @@ k8s-mcp-server/
 
 ### 核心工具 (k8s_tools.py)
 
-#### 集群信息
-- `get_cluster_info()` - 获取集群信息
-
-#### Pod 操作工具
+- `get_cluster_info()` - 获取集群信息（API 版本、服务器地址等）
 - `get_pod_logs()` - 获取 Pod 日志（支持 `previous` 获取上一实例日志）
-- `copy_pod_file()` - Pod 与本地双向拷贝文件/目录，本地默认保存到 `data/copyfiles`
 - `exec_pod_command()` - 在 Pod 中执行命令
-- `port_forward()` - 配置端口转发到 Pod
+- `copy_pod_files()` - Pod 文件读写：from_pod 将文件内容返回给客户端（支持 `local_path` 直接保存到本地，二进制文件自动解码），to_pod 将客户端内容或本地文件写入 Pod
+- `port_forward()` - Pod 端口转发管理：`action="start"` 启动转发、`action="stop"` 停止指定转发、`action="list"` 列出活跃会话；认证模式下按用户隔离
 
 ### 集群管理工具 (cluster_tools.py)
 
-- `import_cluster()` - 导入集群配置
-- `list_clusters()` - 列出所有集群配置
-- `get_cluster()` - 获取指定集群配置
+- `import_cluster()` - 导入集群配置（含 kubeconfig 保存）
+- `list_clusters(name?)` - 查看集群配置（省略 name 列出全部，指定 name 返回详情）
 - `delete_cluster()` - 删除集群配置
 - `set_default_cluster()` - 设置默认集群
 - `test_cluster_connection()` - 测试集群连接
-- `get_default_cluster()` - 获取默认集群
-- `save_kubeconfig()` - 保存 kubeconfig 文件
-- `load_kubeconfig()` - 加载 kubeconfig 文件
+- `load_kubeconfig()` - 加载 kubeconfig 文件（支持脱敏）
 - `list_kubeconfigs()` - 列出所有保存的 kubeconfig 文件
 - `delete_kubeconfig()` - 删除 kubeconfig 文件
-- `validate_kubeconfig()` - 验证 kubeconfig 文件
-- `get_kubeconfig_info()` - 获取 kubeconfig 信息
+- `get_kubeconfig_info()` - 获取 kubeconfig 详情或验证格式
 
 ### 诊断工具 (diagnostic_tools.py)
 
-- `check_cluster_health()` - 检查集群健康状态
+- `check_cluster_health()` - 检查集群健康状态，可选 `include_rbac_check` 附带 RBAC 权限冲突检测
 - `check_node_health()` - 检查节点健康状态
-- `check_pod_health()` - 检查Pod健康状态（支持筛选失败Pod）
+- `check_pod_health()` - 检查 Pod 健康状态（支持筛选失败 Pod）
 - `get_cluster_resource_usage()` - 获取集群资源使用情况（支持指定命名空间）
 - `get_cluster_events()` - 获取集群事件
-- `drain_node()` - 节点排水（cordon + 驱逐 Pod，跳过 DaemonSet/mirror pod）
+- `manage_node()` - 节点运维管理：`action="drain"` 排水（cordon + 驱逐 Pod）、`action="cordon"` 标记不可调度、`action="uncordon"` 恢复调度
 
 #### 支持的批量操作资源类型
 
@@ -297,13 +310,6 @@ k8s-mcp-server/
 - `restore_from_backup()` - 从备份恢复资源
 - `list_backups()` - 列出备份文件
 
-### RBAC管理工具 (rbac_tools.py)
-
-- `create_role_template(template_type, namespace, role_name)` - 创建角色模板（developer/admin/operator/readonly/deployer/monitor/debug）
-- `analyze_serviceaccount_permissions()` - 分析 ServiceAccount 的权限
-- `check_serviceaccount_permission_conflicts()` - 检查命名空间内 SA 权限冲突
-- `list_role_serviceaccounts()` - 列出绑定到某角色的所有 ServiceAccount
-
 ### 变更验证预览系统
 
 系统内置了自动的资源操作验证和预览功能，自动集成到所有写操作中：
@@ -338,9 +344,9 @@ k8s-mcp-server/
 - **批量资源操作**：支持批量创建、更新、删除多个资源，支持事务回滚
 - **发布管理**：支持 Deployment/StatefulSet/DaemonSet 的 status、undo（含指定 revision）、pause、resume
 - **资源监控**：`batch_top_resources` 查看 Node/Pod 的 CPU、内存使用（依赖 metrics-server）
-- **Pod 文件拷贝**：`copy_pod_file` 支持 Pod 与本地双向拷贝，本地保存至 `data/copyfiles`
+- **Pod 文件读写**：`copy_pod_files` 支持 Pod 文件双向传输，内容直接通过响应/参数传递，不依赖服务端磁盘
 - **备份恢复**：支持命名空间和单个资源的备份恢复，按集群/命名空间/资源类型层级存储
-- **RBAC管理**：完整的角色和权限管理，支持角色模板和用户绑定
+- **权限 Profile**：内置 viewer/developer/operator/admin 四级权限模板，工具可见性与 K8s RBAC 严格匹配；低权限用户调用集群级工具时优雅降级（返回部分结果或友好提示）；支持自定义 Profile、自动创建 K8s RBAC 资源；operator 可委托管理 viewer/developer 用户
 - **变更验证预览**：自动验证所有写操作并显示具体变更内容，提供详细的操作预览
 
 ## 📝 使用示例
@@ -395,19 +401,6 @@ k8s-mcp-server/
     "arguments": {
       "namespace": "my-app",
       "include_secrets": true
-    }
-  }
-}
-
-// 创建角色模板（template_type: developer/admin/operator/readonly/deployer/monitor/debug）
-{
-  "method": "tools/call",
-  "params": {
-    "name": "create_role_template",
-    "arguments": {
-      "template_type": "developer",
-      "namespace": "my-app",
-      "role_name": "developer"
     }
   }
 }
@@ -580,19 +573,23 @@ SSE_HOST=0.0.0.0
 SSE_PORT=8000
 
 # 数据存储目录（自动创建）
-DATA_DIR=./data
-KUBECONFIGS_DIR=./data/kubeconfigs
+DATA_DIR=./data                 # 集群配置、kubeconfig、备份等数据根目录
 LOGS_DIR=./logs
 
-# MCP配置
+# MCP 路径配置
 MCP_MESSAGE_PATH=/mcp/k8s-server/message/
 MCP_SSE_PATH=/mcp/k8s-server/sse
 MCP_STREAMABLE_PATH=/mcp/k8s-server/streamable  # Streamable HTTP 端点
 
-# 日志配置
+# 日志级别
 LOG_LEVEL=info
-LOG_FILE=./logs/k8s-mcp-server.log
-OPERATIONS_LOG_FILE=./logs/operations.log  # 写操作日志（create/update/delete/backup/restore 等）
+
+# 认证配置（可选，默认不启用）
+MCP_AUTH_ENABLED=false          # 设为 true 启用 JWT 认证和多租户隔离
+MCP_JWT_SECRET=                 # JWT 签名密钥（启用认证时必填）
+MCP_JWT_ALGORITHM=HS256         # JWT 算法
+MCP_TOKEN_MAX_EXPIRY=7776000    # Token 最大有效期（秒），默认 90 天
+MCP_ADMIN_API_PREFIX=/admin     # 管理 API 路由前缀
 ```
 
 ### kubeconfig 管理
@@ -769,7 +766,92 @@ set_default_cluster(name="测试环境")
 test_cluster_connection(name="生产环境")
 ```
 
-### 4. 容器化部署
+### 4. 多租户认证（可选）
+
+适用于团队/线上多人使用场景。
+
+```bash
+# 1. 启动服务（启用认证）
+MCP_AUTH_ENABLED=true MCP_JWT_SECRET=your-secret-key \
+  python main.py --transport sse --host 0.0.0.0 --port 8000
+
+# 2. 生成管理员 Token
+MCP_JWT_SECRET=your-secret-key mcp-admin bootstrap
+# 输出：MCP_BOOTSTRAP_ADMIN_JWT=eyJhbGci...
+
+# 3. 为用户签发 Token
+MCP_JWT_SECRET=your-secret-key mcp-admin issue --user alice --expires 604800
+
+# 4. 通过 MCP Tool 为用户分配集群权限（管理员在 MCP 对话中执行）
+# admin_manage_users(action="grant_access", user_id="alice",
+#   cluster_name="prod", namespace="default", profile="developer")
+```
+
+用户在 MCP 客户端配置 Token（以 Cursor 为例）：
+
+```json
+{
+  "mcpServers": {
+    "k8s-mcp-server": {
+      "url": "http://your-server:8000/mcp/k8s-server/streamable",
+      "headers": {
+        "Authorization": "Bearer eyJhbGci..."
+      }
+    }
+  }
+}
+```
+
+#### 权限 Profile
+
+| Profile | 可见工具 | K8s 权限 | 管理能力 |
+|---------|---------|---------|---------|
+| `viewer` | 13 个（只读 + 日志 + 连接测试 + 切换集群） | get/list/watch + pods/log | — |
+| `developer` | 21 个（读写 + exec） | CRUD 工作负载 + pods/log、exec、portforward | — |
+| `operator` | 30 个（+ 备份恢复、集群诊断、节点排水、用户管理） | 命名空间全操作 + rbac 只读 + ClusterRole（nodes/namespaces/events/metrics/drain） | 可管理 viewer/developer 用户 |
+| `admin` | 35 个（全部，含集群级操作） | 使用 K8s admin kubeconfig，天然集群全权限 | 全部 |
+
+#### 安全机制
+
+- **路径注入防护**：`kubeconfig_path` 仅允许指向当前用户自己的数据目录，阻止跨用户读取
+- **输入校验**：`user_id`、`cluster_name`、`namespace` 等标识符强制格式校验（字母数字、连字符、下划线、点），防止路径穿越
+- **operator 权限隔离**：operator 不能自我授权、不能操作高权限用户、不能签发 admin token。operator 自身的 K8s 操作权限限定在被授权的命名空间内，但其用户管理能力（`grant_access`）属于 MCP 平台级委派，可跨命名空间为用户分配 viewer/developer 权限（底层使用 admin kubeconfig 创建 RBAC），适合作为平台维护人员统一管理多团队接入
+- **自定义 Profile 限制**：自定义 profile 不允许包含 `user_manage`/`profile_manage`/`cluster_ops` 保留分类或管理工具
+- **Token 有效期上限**：默认最大 90 天（可通过 `MCP_TOKEN_MAX_EXPIRY` 调整）
+- **撤销列表自动清理**：过期的 jti 会自动从撤销表中移除，防止无限增长
+- **审计日志**：所有管理操作（签发/撤销 Token、授权/撤销集群权限）均记录到 `operations.log`
+- **Operator RBAC 代理**：operator 调用 `grant_access` 时自动使用 admin 的高权限 kubeconfig 创建 K8s RBAC 资源
+- **ClusterRole 联动**：operator profile 的 `grant_access` 额外创建 ClusterRole + ClusterRoleBinding（nodes、namespaces、events、metrics、pods/eviction），`revoke_access` 同步清理
+- **集群级工具优雅降级**：`get_cluster_info` 对无集群级权限的用户返回部分结果（跳过 nodes/namespaces）；`get_cluster_events` 在 ns=all 失败时提示指定命名空间；`test_cluster_connection` 使用 VersionApi 无需集群级权限
+- **K8s 服务缓存失效**：`grant_access`/`revoke_access` 执行后自动失效目标用户的 K8s 客户端缓存，避免旧 token 被后续请求复用
+- **RBAC 模板即时同步**：`grant_access` 使用 K8s API 直接创建/替换 Role，确保模板变更立即生效，无需手动删除旧 Role
+- **端口转发线程隔离**：port_forward 使用独立的 ApiClient 实例，避免 monkey-patch 污染共享 API 客户端
+- **Tar slip 防护**：从 Pod 拷贝文件时校验 tar 成员路径，防止路径穿越写入目标目录之外
+
+#### 管理 REST API
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/admin/tokens/issue` | POST | 签发 Token |
+| `/admin/tokens/revoke` | POST | 撤销 Token |
+| `/admin/tokens/revoked` | GET | 查看撤销列表 |
+| `/admin/tokens/cleanup` | POST | 清理过期撤销记录 |
+| `/admin/users` | GET | 列出所有用户 |
+
+#### CLI 管理工具
+
+```bash
+mcp-admin bootstrap          # 生成管理员 Token
+mcp-admin issue --user bob   # 签发用户 Token
+mcp-admin revoke --jti xxx   # 撤销单个 Token
+mcp-admin revoke-user --user bob  # 撤销用户全部 Token
+mcp-admin list-users         # 列出所有用户
+mcp-admin grant --user bob --cluster prod --namespace default --profile developer  # 分配权限
+mcp-admin revoke-access --user bob --cluster prod --namespace default  # 撤销权限
+mcp-admin list-profiles      # 列出所有 Profile
+```
+
+### 5. 容器化部署
 
 ```bash
 # 构建并部署到 Kubernetes
@@ -785,7 +867,7 @@ kubectl logs -f deployment/k8s-mcp-server
 
 ### 最新版本特性
 
-- ✅ **40 个工具函数**：涵盖所有主要 Kubernetes 资源（含 CRD 动态发现）
+- ✅ **35 个工具函数**：涵盖所有主要 Kubernetes 资源（含 CRD 动态发现）
 - ✅ **优雅删除支持**：部分删除函数支持 `grace_period_seconds` 参数
 - ✅ **容器化支持**：提供 Docker 和 Kubernetes 部署
 - ✅ **数据持久化**：支持配置、日志及 Pod 拷贝文件（data/copyfiles）的持久化存储
@@ -794,11 +876,11 @@ kubectl logs -f deployment/k8s-mcp-server
 - ✅ **批量操作**：支持集群所有可发现 API 资源的批量操作，包含事务回滚
 - ✅ **发布管理**：支持 Deployment/StatefulSet/DaemonSet 的 status、undo（含指定 revision）、pause、resume
 - ✅ **资源监控**：batch_top_resources 查看 Node/Pod CPU、内存使用（依赖 metrics-server）
-- ✅ **Pod 文件拷贝**：copy_pod_file 支持 Pod 与本地双向拷贝
-- ✅ **RBAC管理**：完整的角色和权限管理系统
+- ✅ **Pod 文件读写**：copy_pod_files 支持 Pod 文件双向传输，支持 `local_path` 直接落盘（二进制自动解码，无中间 base64 文件）
+- ✅ **多租户认证**：JWT 认证、权限 Profile 分级、Tool 可见性过滤、K8s RBAC 自动联动、输入校验与审计日志
 - ✅ **备份恢复**：支持命名空间和资源级别的备份恢复
 - ✅ **变更验证预览**：自动验证所有写操作，显示具体变更内容和操作风险
-- ✅ **交互式操作**：支持 Pod 命令执行、端口转发、日志（含 previous 上一实例）
+- ✅ **交互式操作**：支持 Pod 命令执行、端口转发（含启停管理）、日志（含 previous 上一实例）
 - ✅ **多集群 kubeconfig**：batch、backup、rbac 等工具均支持 `kubeconfig_path` 参数指定目标集群
 
 
@@ -822,7 +904,7 @@ REGRESSION_SKIP_ASYNC=1 python -m tests.regression_test
 ```
 
 - **同步测试**（7 个）：导入、资源构建器、参数解析、kubeconfig 验证、tools 导出等
-- **异步测试**（37 个）：覆盖 40 个 MCP 工具的实际调用，需集群连接
+- **异步测试**（30 个）：覆盖 MCP 工具的实际调用，需集群连接
 - **备份测试隔离**：`backup_namespace`、`backup_resource` 的回归测试使用临时目录，测试后自动删除，不影响正式备份数据
 
 ## 🤝 贡献

@@ -114,15 +114,45 @@ class ClusterOpsMixin:
         except ApiException as e:
             raise Exception(f"驱逐 Pod {namespace}/{name} 失败: {e.reason}")
 
+    async def cordon_node(self, node_name: str) -> Dict[str, Any]:
+        """标记节点为不可调度（cordon），不驱逐现有 Pod"""
+        try:
+            node = self.v1_api.read_node(name=node_name)
+            was_unschedulable = bool(node.spec.unschedulable)
+            if not was_unschedulable:
+                self.v1_api.patch_node(name=node_name, body={"spec": {"unschedulable": True}})
+            return {
+                "node": node_name,
+                "action": "cordon",
+                "unschedulable": True,
+                "was_already_cordoned": was_unschedulable,
+            }
+        except ApiException as e:
+            raise Exception(f"Cordon 节点失败: {e.reason}")
+
+    async def uncordon_node(self, node_name: str) -> Dict[str, Any]:
+        """恢复节点为可调度（uncordon）"""
+        try:
+            node = self.v1_api.read_node(name=node_name)
+            was_unschedulable = bool(node.spec.unschedulable)
+            if was_unschedulable:
+                self.v1_api.patch_node(name=node_name, body={"spec": {"unschedulable": False}})
+            return {
+                "node": node_name,
+                "action": "uncordon",
+                "unschedulable": False,
+                "was_already_schedulable": not was_unschedulable,
+            }
+        except ApiException as e:
+            raise Exception(f"Uncordon 节点失败: {e.reason}")
+
     async def drain_node(self, node_name: str, ignore_daemonset: bool = True,
                          ignore_mirror_pods: bool = True) -> Dict[str, Any]:
         """节点排水：cordon 后驱逐该节点上所有可驱逐的 Pod"""
         try:
-            # 1. Cordon 节点
             node = self.v1_api.read_node(name=node_name)
             if not node.spec.unschedulable:
-                node.spec.unschedulable = True
-                self.v1_api.replace_node(name=node_name, body=node)
+                self.v1_api.patch_node(name=node_name, body={"spec": {"unschedulable": True}})
 
             # 2. 列出该节点上的所有 Pod
             pods = self.v1_api.list_pod_for_all_namespaces(
@@ -427,8 +457,7 @@ class ClusterOpsMixin:
     async def check_api_health(self) -> Dict[str, Any]:
         """检查 API 服务器健康状态"""
         try:
-            # 尝试获取版本信息来测试连接
-            version_api = client.VersionApi()
+            version_api = client.VersionApi(api_client=self._api_client)
             version_info = version_api.get_code()
             
             return {
@@ -449,34 +478,36 @@ class ClusterOpsMixin:
             }
 
     async def get_cluster_info(self) -> Dict[str, Any]:
-        """获取集群信息"""
+        """获取集群信息（按权限级别优雅降级：无集群级权限时返回部分结果）"""
+        result: Dict[str, Any] = {"api_version": "v1", "cluster_name": "unknown"}
+
         try:
-            # 获取API服务器版本
-            version = self.v1_api.get_api_resources()
-            
-            # 获取节点信息
             nodes = self.v1_api.list_node()
-            node_count = len(nodes.items)
-            
-            # 获取命名空间信息
-            namespaces = self.v1_api.list_namespace()
-            namespace_count = len(namespaces.items)
-            
-            # 获取集群名称（从第一个节点的cluster-name标签获取）
-            cluster_name = "unknown"
-            if nodes.items:
-                first_node = nodes.items[0]
-                if first_node.metadata.labels:
-                    cluster_name = first_node.metadata.labels.get("kubernetes.io/hostname", "unknown")
-            
-            return {
-                "cluster_name": cluster_name,
-                "node_count": node_count,
-                "namespace_count": namespace_count,
-                "api_version": "v1"
-            }
+            result["node_count"] = len(nodes.items)
+            if nodes.items and nodes.items[0].metadata.labels:
+                result["cluster_name"] = nodes.items[0].metadata.labels.get(
+                    "kubernetes.io/hostname", "unknown"
+                )
+        except ApiException as e:
+            if e.status == 403:
+                result["node_count_error"] = "权限不足：需要集群级 nodes list 权限"
+            else:
+                result["node_count_error"] = f"获取节点信息失败: {e.reason}"
         except Exception as e:
-            return {"error": str(e)}
+            result["node_count_error"] = str(e)
+
+        try:
+            namespaces = self.v1_api.list_namespace()
+            result["namespace_count"] = len(namespaces.items)
+        except ApiException as e:
+            if e.status == 403:
+                result["namespace_count_error"] = "权限不足：需要集群级 namespaces list 权限"
+            else:
+                result["namespace_count_error"] = f"获取命名空间信息失败: {e.reason}"
+        except Exception as e:
+            result["namespace_count_error"] = str(e)
+
+        return result
 
     async def get_node_metrics(self) -> List[Dict[str, Any]]:
         """获取所有节点的 CPU、内存使用（依赖 metrics-server）"""

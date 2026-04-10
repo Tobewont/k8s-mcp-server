@@ -20,30 +20,31 @@ from . import mcp
 @mcp.tool()
 @handle_tool_errors
 async def check_cluster_health(kubeconfig_path: Optional[str] = None,
-                               cluster_name: Optional[str] = None) -> str:
+                               cluster_name: Optional[str] = None,
+                               include_rbac_check: bool = False,
+                               rbac_namespace: Optional[str] = None) -> str:
     """
-    检查Kubernetes集群健康状态
-    
+    检查Kubernetes集群健康状态，可选附带 RBAC 权限冲突检测
+
     Args:
         kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
         cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
-    
+        include_rbac_check: 是否同时检查 RBAC 权限冲突（如重复绑定、冗余权限），默认 False
+        rbac_namespace: RBAC 检查的目标命名空间，仅 include_rbac_check=True 时有效；省略则检查所有系统命名空间
+
     Returns:
-        集群健康检查结果
+        集群健康检查结果（含可选 RBAC 冲突报告）
     """
     from utils.cluster_config import resolve_kubeconfig_path
     effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
     k8s_service = get_k8s_api_service(effective_path)
     cluster_info = await k8s_service.get_cluster_info()
         
-    # 获取节点状态
     nodes = await k8s_service.list_nodes()
     
-    # 统计节点状态
     ready_nodes = [node for node in nodes if node["status"] == "Ready"]
     not_ready_nodes = [node for node in nodes if node["status"] != "Ready"]
     
-    # 检查系统命名空间的 Pod
     system_namespaces = ["kube-system", "kube-public", "kube-node-lease"]
     system_pod_issues = []
     
@@ -57,10 +58,8 @@ async def check_cluster_health(kubeconfig_path: Optional[str] = None,
             logger.debug("跳过命名空间 %s: %s", namespace, e)
             continue
     
-    # API 服务器健康检查
     api_health = await k8s_service.check_api_health()
     
-    # 计算健康得分
     total_score = 100
     if api_health["status"] != "healthy":
         total_score -= 50
@@ -71,7 +70,6 @@ async def check_cluster_health(kubeconfig_path: Optional[str] = None,
     
     health_score = max(0, total_score)
     
-    # 确定整体状态
     if health_score >= 90:
         overall_status = "healthy"
     elif health_score >= 70:
@@ -79,7 +77,7 @@ async def check_cluster_health(kubeconfig_path: Optional[str] = None,
     else:
         overall_status = "critical"
     
-    result = {
+    result: Dict[str, Any] = {
         "success": True,
         "overall_status": overall_status,
         "health_score": health_score,
@@ -96,7 +94,27 @@ async def check_cluster_health(kubeconfig_path: Optional[str] = None,
         },
         "recommendations": _generate_health_recommendations(not_ready_nodes, system_pod_issues, api_health)
     }
-    
+
+    if include_rbac_check:
+        from services.factory import get_k8s_advanced_service
+        adv = get_k8s_advanced_service(effective_path)
+        namespaces_to_check = [rbac_namespace] if rbac_namespace else system_namespaces
+        rbac_results: List[Dict[str, Any]] = []
+        for ns in namespaces_to_check:
+            try:
+                conflicts = await adv.check_serviceaccount_permission_conflicts(ns)
+                if conflicts.get("conflicts"):
+                    rbac_results.append({"namespace": ns, "conflicts": conflicts["conflicts"]})
+            except Exception as e:
+                logger.debug("RBAC 检查跳过 %s: %s", ns, e)
+        result["rbac_check"] = {
+            "checked_namespaces": namespaces_to_check,
+            "conflict_count": sum(len(r["conflicts"]) for r in rbac_results),
+            "details": rbac_results
+        }
+        if rbac_results:
+            result["recommendations"].append("发现 RBAC 权限冲突，请检查 rbac_check.details 以清理冗余绑定")
+
     return json_success(result)
 
 @mcp.tool()
@@ -134,33 +152,59 @@ async def check_node_health(node_name: Optional[str] = None, kubeconfig_path: Op
 
 @mcp.tool()
 @handle_tool_errors
-async def drain_node(node_name: str, ignore_daemonset: bool = True,
-                     ignore_mirror_pods: bool = True, kubeconfig_path: Optional[str] = None,
-                     cluster_name: Optional[str] = None) -> str:
+async def manage_node(
+    node_name: str,
+    action: str = "drain",
+    ignore_daemonset: bool = True,
+    ignore_mirror_pods: bool = True,
+    kubeconfig_path: Optional[str] = None,
+    cluster_name: Optional[str] = None,
+) -> str:
     """
-    节点排水（drain）：将节点设为不可调度并驱逐该节点上的 Pod
-    
-    等同于 kubectl drain <node_name>，会跳过 DaemonSet Pod、mirror pod 和无控制器的 Pod。
-    
+    节点运维管理：排水（drain）、标记不可调度（cordon）、恢复调度（uncordon）
+
     Args:
         node_name: 节点名称
-        ignore_daemonset: 是否跳过 DaemonSet Pod，默认 True
-        ignore_mirror_pods: 是否跳过 mirror pod（静态 Pod 镜像），默认 True
+        action: 操作类型
+            - "drain"：cordon + 驱逐 Pod（等同于 kubectl drain）
+            - "cordon"：仅标记不可调度，不驱逐现有 Pod（等同于 kubectl cordon）
+            - "uncordon"：恢复为可调度（等同于 kubectl uncordon）
+        ignore_daemonset: drain 时是否跳过 DaemonSet Pod，默认 True
+        ignore_mirror_pods: drain 时是否跳过 mirror pod（静态 Pod 镜像），默认 True
         kubeconfig_path: kubeconfig 文件路径，不指定则使用 cluster_name 或默认集群
         cluster_name: 集群配置名称（clusters.json 中的 name），kubeconfig_path 未指定时使用
-    
+
     Returns:
-        排水结果（已驱逐、已跳过、失败的 Pod 列表）
+        操作结果
     """
+    if action not in ("drain", "cordon", "uncordon"):
+        return json_error(f"不支持的 action: {action}，支持: drain, cordon, uncordon")
+
     from utils.cluster_config import resolve_kubeconfig_path
     effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
     k8s_service = get_k8s_api_service(effective_path)
+
+    if action == "cordon":
+        result = await k8s_service.cordon_node(node_name=node_name)
+        log_operation("manage_node", "cordon", {"node": node_name}, True)
+        return json_success(result)
+
+    if action == "uncordon":
+        result = await k8s_service.uncordon_node(node_name=node_name)
+        log_operation("manage_node", "uncordon", {"node": node_name}, True)
+        return json_success(result)
+
     result = await k8s_service.drain_node(
-            node_name=node_name,
-            ignore_daemonset=ignore_daemonset,
-            ignore_mirror_pods=ignore_mirror_pods
+        node_name=node_name,
+        ignore_daemonset=ignore_daemonset,
+        ignore_mirror_pods=ignore_mirror_pods,
     )
-    log_operation("drain_node", "drain", {"node": node_name, "evicted": len(result["evicted"]), "skipped": len(result["skipped"]), "failed": len(result["failed"])}, len(result["failed"]) == 0)
+    log_operation("manage_node", "drain", {
+        "node": node_name,
+        "evicted": len(result["evicted"]),
+        "skipped": len(result["skipped"]),
+        "failed": len(result["failed"]),
+    }, len(result["failed"]) == 0)
     return json_success(result)
 
 @mcp.tool()
@@ -326,7 +370,16 @@ async def get_cluster_events(namespace: str = "all", kubeconfig_path: Optional[s
     from utils.cluster_config import resolve_kubeconfig_path
     effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
     k8s_service = get_k8s_api_service(effective_path)
-    events = await k8s_service.list_events(namespace=namespace)
+    try:
+        events = await k8s_service.list_events(namespace=namespace)
+    except Exception as e:
+        err_str = str(e)
+        if namespace == "all" and ("Forbidden" in err_str or "forbidden" in err_str.lower()):
+            return json_error(
+                "当前用户无集群级 events 权限，无法查看所有命名空间事件。"
+                "请指定具体的 namespace 参数（如 namespace='default'）。"
+            )
+        raise
     if event_type:
         events = [e for e in events if e.get("type") == event_type]
     events.sort(key=lambda x: x.get("last_timestamp") or "", reverse=True)

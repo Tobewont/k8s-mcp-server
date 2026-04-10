@@ -15,14 +15,16 @@ def main():
     print("集群可达性诊断")
     print("=" * 60)
 
-    # 1. 检查 clusters.json
-    from config import CLUSTERS_CONFIG_FILE, KUBECONFIGS_DIR
-    print(f"\n1. 配置文件路径: {CLUSTERS_CONFIG_FILE}")
-    if not os.path.exists(CLUSTERS_CONFIG_FILE):
+    # 1. 检查 clusters.json（通过 ClusterConfigManager 获取）
+    from config import get_user_data_root
+    data_root = get_user_data_root(None)
+    clusters_file = os.path.join(data_root, "clusters.json")
+    print(f"\n1. 配置文件路径: {clusters_file}")
+    if not os.path.exists(clusters_file):
         print("   [警告] clusters.json 不存在")
     else:
         import json
-        with open(CLUSTERS_CONFIG_FILE, 'r', encoding='utf-8') as f:
+        with open(clusters_file, 'r', encoding='utf-8') as f:
             clusters = json.load(f)
         default = next((c for c in clusters if c.get("is_default")), clusters[0] if clusters else None)
         print(f"   集群数量: {len(clusters)}")

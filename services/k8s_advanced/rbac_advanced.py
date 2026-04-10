@@ -25,18 +25,26 @@ class RbacAdvancedMixin:
             ],
             "operator": [
                 {"api_groups": [""], "resources": ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"], "verbs": ["*"]},
+                {"api_groups": [""], "resources": ["pods/log"], "verbs": ["get"]},
+                {"api_groups": [""], "resources": ["pods/exec"], "verbs": ["get", "create"]},
+                {"api_groups": [""], "resources": ["pods/portforward"], "verbs": ["get", "create"]},
                 {"api_groups": ["apps"], "resources": ["deployments", "statefulsets", "daemonsets"], "verbs": ["*"]},
                 {"api_groups": ["networking.k8s.io"], "resources": ["ingresses"], "verbs": ["*"]},
-                {"api_groups": ["batch"], "resources": ["jobs", "cronjobs"], "verbs": ["*"]}
+                {"api_groups": ["batch"], "resources": ["jobs", "cronjobs"], "verbs": ["*"]},
+                {"api_groups": ["rbac.authorization.k8s.io"], "resources": ["roles", "rolebindings"], "verbs": ["get", "list"]},
             ],
             "readonly": [
                 {"api_groups": [""], "resources": ["pods", "services", "configmaps", "persistentvolumeclaims", "events"], "verbs": ["get", "list", "watch"]},
+                {"api_groups": [""], "resources": ["pods/log"], "verbs": ["get"]},
                 {"api_groups": ["apps"], "resources": ["deployments", "statefulsets", "daemonsets", "replicasets"], "verbs": ["get", "list", "watch"]},
                 {"api_groups": ["networking.k8s.io"], "resources": ["ingresses", "networkpolicies"], "verbs": ["get", "list", "watch"]},
                 {"api_groups": ["batch"], "resources": ["jobs", "cronjobs"], "verbs": ["get", "list", "watch"]}
             ],
             "deployer": [
                 {"api_groups": [""], "resources": ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+                {"api_groups": [""], "resources": ["pods/log"], "verbs": ["get"]},
+                {"api_groups": [""], "resources": ["pods/exec"], "verbs": ["get", "create"]},
+                {"api_groups": [""], "resources": ["pods/portforward"], "verbs": ["get", "create"]},
                 {"api_groups": ["apps"], "resources": ["deployments", "statefulsets", "daemonsets"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
                 {"api_groups": ["networking.k8s.io"], "resources": ["ingresses"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
                 {"api_groups": ["batch"], "resources": ["jobs", "cronjobs"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
@@ -52,10 +60,26 @@ class RbacAdvancedMixin:
             "debug": [
                 {"api_groups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch"]},
                 {"api_groups": [""], "resources": ["pods/log"], "verbs": ["get", "list"]},
-                {"api_groups": [""], "resources": ["pods/exec"], "verbs": ["create"]},
-                {"api_groups": [""], "resources": ["pods/portforward"], "verbs": ["create"]},
+                {"api_groups": [""], "resources": ["pods/exec"], "verbs": ["get", "create"]},
+                {"api_groups": [""], "resources": ["pods/portforward"], "verbs": ["get", "create"]},
                 {"api_groups": [""], "resources": ["events"], "verbs": ["get", "list", "watch"]}
             ]
+        }
+        return templates.get(role_type, [])
+
+    def _get_cluster_role_template_rules(self, role_type: str) -> List[Dict]:
+        """获取需要 ClusterRole 的模板规则（集群级资源：nodes、metrics 等）。
+        仅部分模板需要集群级权限，返回空列表表示不需要。
+        """
+        templates = {
+            "operator": [
+                {"api_groups": [""], "resources": ["nodes"], "verbs": ["get", "list", "watch", "patch"]},
+                {"api_groups": [""], "resources": ["namespaces"], "verbs": ["get", "list", "create"]},
+                {"api_groups": [""], "resources": ["events"], "verbs": ["get", "list"]},
+                {"api_groups": [""], "resources": ["pods"], "verbs": ["get", "list"]},
+                {"api_groups": [""], "resources": ["pods/eviction"], "verbs": ["create"]},
+                {"api_groups": ["metrics.k8s.io"], "resources": ["nodes", "pods"], "verbs": ["get", "list"]},
+            ],
         }
         return templates.get(role_type, [])
 

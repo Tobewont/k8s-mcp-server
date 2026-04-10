@@ -5,7 +5,8 @@
 
 from __future__ import annotations as _annotations
 
-from typing import Any
+import logging as _logging
+from typing import Any, Sequence
 
 # 修复 anyio 的类型注解兼容性问题
 def _fix_anyio_compatibility():
@@ -45,13 +46,18 @@ from mcp.server.fastmcp.tools import ToolManager
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
 from mcp.server.lowlevel.server import lifespan as default_lifespan
 from mcp.server.sse import SseServerTransport
+from mcp.types import Tool as MCPTool
 
+from config import MCP_ADMIN_API_PREFIX, MCP_AUTH_ENABLED, MCP_HEALTH_PATH
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from .admin_routes import admin_cleanup_revoked, admin_issue_token, admin_list_revoked, admin_list_users, admin_revoke_token
+from .jwt_middleware import JWTAuthMiddleware
 from .mcp_server import McpServer
 
 logger = get_logger(__name__)
@@ -89,6 +95,87 @@ class FastMCP(_FastMCP):
     @property
     def mcp_server(self) -> McpServer:
         return self._mcp_server
+
+    # ---- tool 可见性过滤 ----
+
+    _AUTH_ONLY_TOOLS = {"whoami", "admin_manage_users", "admin_manage_profiles"}
+
+    def _get_allowed_tools(self) -> set[str] | None:
+        """
+        根据当前请求的用户 profile 返回允许的 tool 名称集合。
+        返回 None 表示不过滤（admin 角色）。
+        返回 set 表示只允许集合中的 tool。
+        """
+        if not MCP_AUTH_ENABLED:
+            return set()  # 空集 → list_tools 中排除 _AUTH_ONLY_TOOLS
+        from utils.auth_context import current_role, current_user_id
+        from utils.permission_profiles import get_profile_allowed_tools, get_user_access_grants
+
+        role = current_role.get()
+        uid = current_user_id.get()
+        if role == "admin":
+            return None
+
+        if not uid:
+            return {"whoami"}
+
+        access = get_user_access_grants(uid, active_only=True)
+        if not access:
+            return {"whoami"}
+
+        allowed: set[str] = {"whoami"}
+        seen_profiles: set[str] = set()
+        for grant in access:
+            pname = grant.get("profile")
+            if pname and pname not in seen_profiles:
+                seen_profiles.add(pname)
+                tools = get_profile_allowed_tools(pname)
+                if tools:
+                    allowed.update(tools)
+        return allowed
+
+    def _filter_tools(self, tools: list, allowed: set[str] | None) -> list:
+        """
+        过滤 tool 列表：
+        - None: 不过滤（admin / 已认证管理员）
+        - 空集: 认证未启用，隐藏 auth-only tools
+        - 非空集: 只保留集合中的 tools
+        """
+        if allowed is None:
+            return tools
+        if not allowed:
+            return [t for t in tools if t.name not in self._AUTH_ONLY_TOOLS]
+        return [t for t in tools if t.name in allowed]
+
+    async def list_tools(self) -> list[MCPTool]:
+        """按用户 profile 过滤可见 tool 列表"""
+        all_tools = self._tool_manager.list_tools()
+        allowed = self._get_allowed_tools()
+        filtered = self._filter_tools(all_tools, allowed)
+        return [
+            MCPTool(
+                name=info.name,
+                description=info.description,
+                inputSchema=info.parameters,
+            )
+            for info in filtered
+        ]
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[Any] | dict[str, Any]:
+        """调用 tool 时校验权限"""
+        allowed = self._get_allowed_tools()
+        if allowed is not None:
+            if not allowed:
+                if name in self._AUTH_ONLY_TOOLS:
+                    from mcp import McpError
+                    from mcp.types import ErrorData, METHOD_NOT_FOUND
+                    raise McpError(ErrorData(code=METHOD_NOT_FOUND, message=f"工具 '{name}' 不可用（认证未启用）"))
+            elif name not in allowed:
+                from mcp import McpError
+                from mcp.types import ErrorData, METHOD_NOT_FOUND
+                raise McpError(ErrorData(code=METHOD_NOT_FOUND, message=f"工具 '{name}' 不可用（权限不足）"))
+        context = self.get_context()
+        return await self._tool_manager.call_tool(name, arguments, context=context, convert_result=True)
 
     def sse_app(self) -> Starlette:
         """Return an instance of the SSE server app with SSE and Streamable HTTP support."""
@@ -148,7 +235,12 @@ class FastMCP(_FastMCP):
                         scope, receive, send
                     )
 
-        # Define the middleware
+        async def health(_request: Request) -> JSONResponse:
+            return JSONResponse({"status": "ok"})
+
+        admin_prefix = MCP_ADMIN_API_PREFIX
+
+        # CORS 在外层，JWT 在内层（请求先过 CORS 再过鉴权）
         middleware = [
             Middleware(
                 CORSMiddleware,
@@ -156,10 +248,37 @@ class FastMCP(_FastMCP):
                 allow_credentials=True,
                 allow_methods=["*"],
                 allow_headers=["*"],
-            )
+            ),
+            Middleware(JWTAuthMiddleware),
         ]
 
         routes = [
+            Route(MCP_HEALTH_PATH, endpoint=health, methods=["GET"]),
+            Route(
+                admin_prefix + "/tokens/issue",
+                endpoint=admin_issue_token,
+                methods=["POST"],
+            ),
+            Route(
+                admin_prefix + "/tokens/revoke",
+                endpoint=admin_revoke_token,
+                methods=["POST"],
+            ),
+            Route(
+                admin_prefix + "/tokens/revoked",
+                endpoint=admin_list_revoked,
+                methods=["GET"],
+            ),
+            Route(
+                admin_prefix + "/users",
+                endpoint=admin_list_users,
+                methods=["GET"],
+            ),
+            Route(
+                admin_prefix + "/tokens/cleanup",
+                endpoint=admin_cleanup_revoked,
+                methods=["POST"],
+            ),
             Route(self.settings.sse_path, endpoint=handle_sse, methods=["GET"]),
             Mount(self.settings.message_path, app=sse.handle_post_message),
             # Streamable HTTP: ASGI 应用，GET=SSE 连接，POST=消息

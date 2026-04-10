@@ -100,6 +100,43 @@ DATA_DIR: "/app/data"        # 数据目录
 LOGS_DIR: "/app/logs"        # 日志目录
 ```
 
+### 认证配置（可选）
+
+启用 JWT 多租户认证时，需额外配置 Secret 和环境变量：
+
+```bash
+# 1. 创建 JWT Secret
+kubectl create secret generic k8s-mcp-server-auth \
+  --from-literal=MCP_JWT_SECRET='your-strong-secret-key' \
+  --from-literal=MCP_BOOTSTRAP_ADMIN_JWT='eyJhbGci...'
+
+# 2. 或使用 mcp-admin 工具预生成管理员 Token
+MCP_JWT_SECRET=your-strong-secret-key mcp-admin bootstrap
+```
+
+在 Deployment 中引用认证相关环境变量：
+
+```yaml
+env:
+  - name: MCP_AUTH_ENABLED
+    value: "true"
+  - name: MCP_JWT_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: k8s-mcp-server-auth
+        key: MCP_JWT_SECRET
+  - name: MCP_JWT_ALGORITHM
+    value: "HS256"
+  - name: MCP_ADMIN_API_PREFIX
+    value: "/admin"
+```
+
+启用认证后：
+- 所有 MCP 连接需携带 `Authorization: Bearer <jwt>` 请求头
+- 每个用户的数据隔离到 `data/users/<user_id>/` 子目录
+- 管理 API（`/admin/tokens/*`、`/admin/users`）需管理员 JWT
+- 管理员可通过 MCP Tool 或 CLI 签发/撤销用户 Token 和集群权限
+
 ## 🌐 服务访问
 
 ### 内部访问
@@ -217,20 +254,18 @@ kubectl get pvc
 ### 常见问题
 
 1. **Pod 无法启动**
-   ```bash
+  ```bash
    kubectl describe pod -l app=k8s-mcp-server
-   ```
-
+  ```
 2. **存储问题**
-   ```bash
+  ```bash
    kubectl get pvc
    kubectl describe pvc k8s-mcp-server-data
-   ```
-
+  ```
 3. **镜像拉取失败**
-   ```bash
+  ```bash
    kubectl describe pod -l app=k8s-mcp-server | grep -A 10 "Events:"
-   ```
+  ```
 
 ### 调试命令
 
@@ -279,12 +314,12 @@ kubectl delete -f k8s/
 # 或者逐个删除
 kubectl delete deployment k8s-mcp-server
 kubectl delete service k8s-mcp-server k8s-mcp-server-external
+kubectl delete ingress k8s-mcp-server-ingress
 kubectl delete configmap k8s-mcp-server-config
-kubectl delete secret k8s-mcp-server-kubeconfig
 kubectl delete pvc k8s-mcp-server-data k8s-mcp-server-logs
-kubectl delete clusterrolebinding k8s-mcp-server
-kubectl delete clusterrole k8s-mcp-server
-kubectl delete serviceaccount k8s-mcp-server
+
+# 如果手动创建了认证 Secret，也需一并清理
+# kubectl delete secret k8s-mcp-server-auth
 ```
 
 ## 🎯 最佳实践
@@ -300,4 +335,4 @@ kubectl delete serviceaccount k8s-mcp-server
 
 - [Kubernetes 官方文档](https://kubernetes.io/docs/)
 - [FastMCP 框架文档](https://github.com/fastmcp/fastmcp)
-- [Kubernetes Python Client](https://github.com/kubernetes-client/python) 
+- [Kubernetes Python Client](https://github.com/kubernetes-client/python)
