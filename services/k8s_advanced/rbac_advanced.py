@@ -28,7 +28,7 @@ class RbacAdvancedMixin:
                 {"api_groups": [""], "resources": ["pods/log"], "verbs": ["get"]},
                 {"api_groups": [""], "resources": ["pods/exec"], "verbs": ["get", "create"]},
                 {"api_groups": [""], "resources": ["pods/portforward"], "verbs": ["get", "create"]},
-                {"api_groups": ["apps"], "resources": ["deployments", "statefulsets", "daemonsets"], "verbs": ["*"]},
+                {"api_groups": ["apps"], "resources": ["deployments", "statefulsets", "daemonsets", "replicasets"], "verbs": ["*"]},
                 {"api_groups": ["networking.k8s.io"], "resources": ["ingresses"], "verbs": ["*"]},
                 {"api_groups": ["batch"], "resources": ["jobs", "cronjobs"], "verbs": ["*"]},
                 {"api_groups": ["rbac.authorization.k8s.io"], "resources": ["roles", "rolebindings"], "verbs": ["get", "list"]},
@@ -45,7 +45,7 @@ class RbacAdvancedMixin:
                 {"api_groups": [""], "resources": ["pods/log"], "verbs": ["get"]},
                 {"api_groups": [""], "resources": ["pods/exec"], "verbs": ["get", "create"]},
                 {"api_groups": [""], "resources": ["pods/portforward"], "verbs": ["get", "create"]},
-                {"api_groups": ["apps"], "resources": ["deployments", "statefulsets", "daemonsets"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+                {"api_groups": ["apps"], "resources": ["deployments", "statefulsets", "daemonsets", "replicasets"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
                 {"api_groups": ["networking.k8s.io"], "resources": ["ingresses"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
                 {"api_groups": ["batch"], "resources": ["jobs", "cronjobs"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
                 {"api_groups": [""], "resources": ["events"], "verbs": ["get", "list", "watch"]}
