@@ -113,7 +113,7 @@ xcopy /E /I skills\k8s-manage %USERPROFILE%\.cursor\skills\k8s-manage
 
 ### Cluster Management (cluster_tools.py)
 
-- `import_cluster()` — Import cluster config (accepts server-side file path or content; auto-validates cert/key match)
+- `import_cluster()` — Import cluster config (accepts server-side file path or direct content; auto-validates cert/key match — some AI models may corrupt long base64 strings during transmission, in which case the error provides `curl` file upload instructions as a fallback)
 - `list_clusters(name?)` — List all clusters or get a specific cluster's details
 - `delete_cluster()` — Remove a cluster config
 - `set_default_cluster()` — Set the default cluster
@@ -204,7 +204,7 @@ Client configuration with token (Cursor example):
 - **Audit logging** — All management operations recorded to per-user `operations.log`
 - **Graceful degradation** — Cluster-level tools return partial results for users without cluster-wide permissions
 - **K8s service cache invalidation** — `grant_access`/`revoke_access` auto-invalidate target user's K8s client cache; `test_cluster_connection` auto-invalidates cluster cache and reloads kubeconfig from disk
-- **import_cluster cert validation** — Auto-validates client certificate and key match on import; rejects mismatched pairs with guidance to use file-path import
+- **import_cluster cert validation** — Auto-validates client certificate and key match on import (`ssl.SSLContext.load_cert_chain`). Direct content passing is supported, but some AI models corrupt long base64 strings during tool call parameter generation; when validation fails, the error message provides `curl` instructions to upload the file via `POST /admin/kubeconfigs/upload`, bypassing the LLM text generation layer
 - **Tar slip protection** — Pod file copy validates tar member paths to prevent directory traversal
 
 ### Admin REST API
@@ -216,6 +216,7 @@ Client configuration with token (Cursor example):
 | `/admin/tokens/revoked` | GET | List revoked tokens |
 | `/admin/tokens/cleanup` | POST | Clean up expired revocations |
 | `/admin/users` | GET | List all users |
+| `/admin/kubeconfigs/upload` | POST | Upload kubeconfig file (fallback for `import_cluster` when cert validation fails due to AI model content corruption; binary HTTP transfer bypasses LLM) |
 
 ### CLI Tool
 

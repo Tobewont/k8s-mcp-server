@@ -73,7 +73,7 @@
 
 | 工具名 | 作用 |
 |--------|------|
-| `import_cluster` | 导入集群配置（`kubeconfig` 参数传入**服务端文件路径**或内容）。导入时自动校验客户端证书与私钥是否匹配 |
+| `import_cluster` | 导入集群配置（`kubeconfig` 参数传入**服务端文件路径**或内容均可）。导入时自动校验客户端证书与私钥是否匹配；部分 AI 模型传输长 base64 时可能损坏内容，校验失败时错误信息包含 `curl` 文件上传指引 |
 | `list_clusters` | 查看集群配置：省略 `name` 列出全部，指定 `name` 返回该集群详情 |
 | `delete_cluster` | 删除集群配置 |
 | `set_default_cluster` | 设置默认集群 |
@@ -211,7 +211,7 @@
 - **operator RBAC 代理**：operator 调用 `grant_access`/`revoke_access` 时忽略 `kubeconfig_path` 参数，自动使用 admin 的高权限 kubeconfig，因为 operator 自身的 K8s 权限通常不含 RBAC 资源创建能力
 - **ClusterRole 联动**：当 profile 模板定义了集群级规则（如 operator 的 nodes/metrics），`grant_access` 自动创建 ClusterRole + ClusterRoleBinding；`revoke_access` 通过 `managed-by=k8s-mcp-server` 标签匹配并清理
 - **K8s 客户端缓存失效**：`grant_access`/`revoke_access` 执行后自动失效目标用户的 K8s 服务缓存，避免旧 token 被后续请求复用导致 401；`import_cluster`/`delete_cluster` 操作后同样失效当前用户缓存；`test_cluster_connection` 测试前自动失效该集群的服务缓存并从磁盘重新加载 kubeconfig，确保外部更新（如 `kubectl cp` 替换文件）立即生效
-- **import_cluster 证书校验**：导入时自动校验 `client-certificate-data` 与 `client-key-data` 是否匹配（通过 `ssl.SSLContext.load_cert_chain`），不匹配立即拒绝
+- **import_cluster 证书校验**：导入时自动校验 `client-certificate-data` 与 `client-key-data` 是否匹配（通过 `ssl.SSLContext.load_cert_chain`），不匹配立即拒绝。直接传入内容是可行的，但部分 AI 模型在生成 tool call 参数时会损坏长 base64 字符串；校验失败时错误信息引导使用 `POST /admin/kubeconfigs/upload` 上传文件后以服务端路径重新导入
 - **RBAC 模板即时同步**：`grant_access` 使用 `rbac_v1_api.create/replace_namespaced_role` 直接操作 K8s API（绕过带验证层的高级方法），确保 RBAC 模板变更立即生效
 - **端口转发线程隔离**：`port_forward` 使用独立的 `ApiClient` 实例处理 WebSocket 连接，避免 `portforward()` 的 monkey-patch 污染共享 API 客户端导致并发请求失败
 - **Tar slip 防护**：`copy_from_pod` 在解压前校验 tar 成员路径，拒绝包含 `../` 等路径穿越的恶意 tar 内容

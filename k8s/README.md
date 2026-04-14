@@ -150,7 +150,7 @@ kubectl apply -f k8s/deployment.yaml
 启用认证后：
 - 所有 MCP 连接需携带 `Authorization: Bearer <jwt>` 请求头
 - 每个用户的数据隔离到 `data/users/<user_id>/` 子目录
-- 管理 API（`/admin/tokens/*`、`/admin/users`）需管理员 JWT
+- 管理 API（`/admin/tokens/*`、`/admin/users`、`/admin/kubeconfigs/upload`）需管理员 JWT
 - 管理员可通过 MCP Tool 或 CLI 签发/撤销用户 Token 和集群权限
 
 ## 🌐 服务访问

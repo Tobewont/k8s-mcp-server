@@ -145,7 +145,7 @@ mcporter 配置：
 
 | 工具名 | 用途 | 关键参数 |
 |--------|------|----------|
-| `import_cluster` | 导入集群配置（传入服务端文件路径或内容；含证书的 kubeconfig 需先上传文件再传路径，见下方「导入集群」流程） | `name`, `kubeconfig`(文件路径或内容), `is_default` |
+| `import_cluster` | 导入集群配置（传入服务端文件路径或内容均可；含证书的 kubeconfig 建议先尝试直接传内容，若服务端校验失败则按错误信息中的 curl 指引上传文件后传路径，见下方「导入集群」流程） | `name`, `kubeconfig`(文件路径或内容), `is_default` |
 | `list_clusters` | 查看集群列表或单个详情 | `name`(可选) |
 | `delete_cluster` | 删除集群配置 | `name` |
 | `set_default_cluster` | 设置默认集群 | `name` |
@@ -366,9 +366,29 @@ CallMcpTool(server="k8s-mcp-server", toolName="manage_node", arguments={
 
 ### 导入集群（含证书认证的 kubeconfig）
 
-证书认证的 kubeconfig 包含长 base64 数据，**不能将内容直接作为 MCP tool call 参数**（LLM 生成参数时会损坏 base64 字符串）。应先将文件上传到服务端，再调用 `import_cluster`：
+`import_cluster` 的 `kubeconfig` 参数支持直接传入文本内容或服务端文件路径。服务端会自动校验 `client-certificate-data` 与 `client-key-data` 是否匹配。
 
-1. 确定 MCP Server 的 HTTP 基础地址（从 MCP 连接配置获取，如 `http://host:8000`）
+**推荐流程：先尝试直接传内容，失败时按错误信息降级为文件上传。**
+
+- 部分 AI 模型能完整传递长 base64 内容，直接传入即可成功。
+- 部分 AI 模型在生成 tool call 参数时会损坏 base64 字符串，导致证书校验失败。此时服务端返回的错误信息包含完整的 `curl` 上传指引，按指引操作即可。
+- Token 类 kubeconfig（无长 base64 证书数据）可始终直接传内容。
+
+#### 步骤 1：尝试直接传入内容
+
+```
+CallMcpTool(server="k8s-mcp-server", toolName="import_cluster", arguments={
+  "name": "my-cluster",
+  "kubeconfig": "<kubeconfig完整文本>",
+  "is_default": false
+})
+```
+
+如果成功，导入完成。如果返回证书/私钥不匹配的错误，进入步骤 2。
+
+#### 步骤 2（降级）：文件上传
+
+1. 从 MCP 连接配置获取服务端 HTTP 基础地址（如 `http://host:8000`）
 2. 使用 Shell 执行 `curl` 将文件上传到服务端：
 
 ```bash
@@ -395,7 +415,7 @@ CallMcpTool(server="k8s-mcp-server", toolName="import_cluster", arguments={
 })
 ```
 
-> **原理**：`curl` 将文件内容走 HTTP 二进制传输，完全绕过 LLM，文件直接落盘到服务端的 kubeconfigs 目录。`import_cluster` 读取该路径完成校验和导入。对于 token 类 kubeconfig（无长 base64），可直接将内容传给 `import_cluster`。
+> **原理**：`curl` 将文件内容走 HTTP 二进制传输，完全绕过 LLM 文本生成环节，确保 base64 数据不被篡改。`import_cluster` 读取该路径完成校验和导入。
 
 ---
 
