@@ -64,10 +64,15 @@ def _validate_cert_key_match(kubeconfig_data: dict) -> Optional[str]:
         except ssl.SSLError:
             user_name = user_entry.get("name", "unknown")
             return (
-                f"用户 '{user_name}' 的 client-certificate-data 与 client-key-data 不匹配。"
+                f"用户 '{user_name}' 的 client-certificate-data 与 client-key-data 不匹配，"
                 "这通常是 kubeconfig 内容在 AI 对话传输中被损坏导致的。"
-                "请改用文件路径方式导入：1) 将 kubeconfig 保存为本地文件；"
-                "2) 调用 import_cluster 时 kubeconfig 参数传入文件绝对路径"
+                "请改用文件上传方式：从当前 MCP 连接 URL 推导出服务端基础地址"
+                "（如 http://host:port/mcp/.../streamable → http://host:port），"
+                "然后执行 curl -s -X POST "
+                '-F "file=@<本地kubeconfig路径>" -F "name=<集群名称>" '
+                '-H "Authorization: Bearer <Token>" '
+                "<基础地址>/admin/kubeconfigs/upload ，"
+                "将返回的 path 作为 kubeconfig 参数重新调用 import_cluster"
             )
         except Exception as e:
             logger.warning("证书校验时出现非 SSL 异常: %s", e)
@@ -108,28 +113,17 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
     """
     导入集群配置。
 
-    kubeconfig 参数接受两种形式：
+    kubeconfig 参数接受三种形式：
     1. 服务端文件路径（如 /app/data/.../xxx.yaml）
-    2. kubeconfig 文本内容（仅适用于 token 类认证，无长 base64 数据）
+    2. kubeconfig 完整文本内容（可直接传入，服务端会自动校验证书与私钥匹配）
+    3. 用户提供的本地文件路径（服务端不可达时需先上传，见下方）
 
-    【重要】当用户提供的 kubeconfig 文件包含 client-certificate-data / client-key-data
-    等长 base64 字段时，禁止将文件内容直接作为 kubeconfig 参数传入（AI 生成参数时
-    会损坏 base64 数据，导致 TLS 握手失败）。正确做法：
-
-    1. 从当前 MCP 连接 URL 推导出服务端基础地址
-       （如连接地址为 http://host:port/mcp/k8s-server/streamable，基础地址为 http://host:port）
-    2. 使用 Shell 执行 curl 将文件上传到服务端：
-       curl -s -X POST -F "file=@<本地文件路径>" -F "name=<集群名称>" \
-         -H "Authorization: Bearer <Token>" \
-         <基础地址>/admin/kubeconfigs/upload
-       返回 {"ok":true, "name":"...", "path":"<服务端路径>"}
-    3. 将返回的 path 作为本工具的 kubeconfig 参数调用本工具完成导入
-
-    未启用认证时省略 -H "Authorization: ..." 即可。
+    服务端会自动校验 client-certificate-data 与 client-key-data 是否匹配。
+    如果内容在传输过程中被损坏，校验会失败并返回包含 curl 上传指引的错误信息。
 
     Args:
         name: 集群名称（仅允许字母、数字、点、下划线、连字符）
-        kubeconfig: 服务端 kubeconfig 文件路径 或 kubeconfig 文本内容
+        kubeconfig: 服务端文件路径 或 kubeconfig 完整文本内容
         service_account: 服务账户名称，默认为default
         namespace: 默认命名空间，默认为default
         is_default: 是否设为默认集群，默认为False
