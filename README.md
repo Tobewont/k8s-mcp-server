@@ -19,6 +19,7 @@
 - **容器化部署**：支持 Docker 和 Kubernetes 部署，包含完整的 k8s 清单文件
 - **资源备份恢复**：支持命名空间和单个资源的备份恢复，按集群/命名空间/资源类型层级存储
 - **变更验证预览**：自动验证资源操作并显示具体的变更内容，提供操作前的详细预览
+- **配套 Agent Skill**：提供 `skills/k8s-manage/SKILL.md`，可直接用于 Cursor Agent / 其他 AI Agent，包含完整的工具清单、参数说明、操作流程和连接方式指引
 
 ## ⚡ 快速开始
 
@@ -89,6 +90,22 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 配置后重启 Cursor 或执行 **Developer: Reload Window**，即可在 MCP 工具列表中看到工具。
 
 > 未启用认证时可见 32 个工具；启用认证后 admin 角色可见全部 35 个，viewer 13 个、developer 21 个、operator 30 个。
+
+#### Agent Skill（可选）
+
+项目附带 Cursor Agent Skill 文件 `skills/k8s-manage/SKILL.md`，包含完整的工具清单、参数说明、连接方式和操作流程。将其安装到 Cursor 后，Agent 能自动发现并正确使用 K8s MCP 工具，无需手动提示。
+
+安装方式：将 `skills/k8s-manage/` 目录复制到 `~/.cursor/skills/` 下：
+
+```bash
+# macOS / Linux
+cp -r skills/k8s-manage ~/.cursor/skills/
+
+# Windows
+xcopy /E /I skills\k8s-manage %USERPROFILE%\.cursor\skills\k8s-manage
+```
+
+安装后 Cursor Agent 在涉及 K8s 集群管理的对话中会自动加载该 Skill。
 
 ### 容器化部署
 
@@ -165,6 +182,8 @@ k8s-mcp-server/
 │   └── copyfiles/               # Pod 文件拷贝本地保存目录
 ├── tests/                       # 回归测试
 │   └── regression_test.py       # 同步/异步 37 个用例
+├── skills/
+│   └── k8s-manage/SKILL.md      # Skill（工具清单、参数、连接方式、操作流程）
 ├── docs/
 │   └── TOOLS.md                 # 工具清单文档
 ├── Dockerfile                   # 容器镜像构建文件

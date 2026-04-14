@@ -145,11 +145,11 @@ mcporter 配置：
 
 | 工具名 | 用途 | 关键参数 |
 |--------|------|----------|
-| `import_cluster` | 导入集群（kubeconfig） | `name`, `kubeconfig`, `is_default` |
+| `import_cluster` | 导入集群（**推荐传入 kubeconfig 文件路径**，直接传内容时长 base64 证书可能被 AI 对话损坏；自动校验证书/私钥匹配） | `name`, `kubeconfig`(文件路径或内容), `is_default` |
 | `list_clusters` | 查看集群列表或单个详情 | `name`(可选) |
 | `delete_cluster` | 删除集群配置 | `name` |
 | `set_default_cluster` | 设置默认集群 | `name` |
-| `test_cluster_connection` | 测试连接 | `cluster_name` |
+| `test_cluster_connection` | 测试连接（自动刷新服务缓存，从磁盘重载 kubeconfig） | `name` |
 | `load_kubeconfig` | 加载 kubeconfig 内容 | `name`, `mask_sensitive` |
 | `list_kubeconfigs` | 列出已保存的 kubeconfig | — |
 | `delete_kubeconfig` | 删除 kubeconfig | `name` |

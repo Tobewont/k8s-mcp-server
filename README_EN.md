@@ -18,6 +18,7 @@ A Kubernetes MCP Server built on the FastMCP framework, providing comprehensive 
 - **Change Validation & Preview** — Automatic validation for all write operations with detailed diff preview
 - **Dual Transport** — Supports both SSE (HTTP) and Stdio transport modes
 - **Containerized Deployment** — Docker and Kubernetes manifests included
+- **Agent Skill Included** — Ships with `skills/k8s-manage/SKILL.md` for Cursor Agent / other AI agents, containing full tool reference, parameters, workflows, and connection guides
 
 ## Quick Start
 
@@ -76,6 +77,20 @@ Alternative Stdio mode (no HTTP server needed):
 ```
 
 > Without auth: 32 tools visible. With auth enabled: admin sees all 35, viewer 13, developer 21, operator 30.
+
+### Agent Skill (Optional)
+
+The project ships with a Cursor Agent Skill at `skills/k8s-manage/SKILL.md`, containing the full tool reference, parameters, connection methods, and operational workflows. Once installed, the Agent can automatically discover and correctly use all K8s MCP tools without manual prompting.
+
+Install by copying the skill directory to `~/.cursor/skills/`:
+
+```bash
+# macOS / Linux
+cp -r skills/k8s-manage ~/.cursor/skills/
+
+# Windows
+xcopy /E /I skills\k8s-manage %USERPROFILE%\.cursor\skills\k8s-manage
+```
 
 ## Tool Overview
 
