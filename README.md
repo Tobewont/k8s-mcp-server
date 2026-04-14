@@ -241,11 +241,11 @@ k8s-mcp-server/
 
 ### 集群管理工具 (cluster_tools.py)
 
-- `import_cluster()` - 导入集群配置（含 kubeconfig 保存）
+- `import_cluster()` - 导入集群配置（**推荐传入 kubeconfig 文件路径**，直接传内容时长 base64 证书可能被 AI 对话传输损坏；导入时自动校验证书与私钥匹配）
 - `list_clusters(name?)` - 查看集群配置（省略 name 列出全部，指定 name 返回详情）
 - `delete_cluster()` - 删除集群配置
 - `set_default_cluster()` - 设置默认集群
-- `test_cluster_connection()` - 测试集群连接
+- `test_cluster_connection()` - 测试集群连接（自动刷新服务缓存，从磁盘重载 kubeconfig）
 - `load_kubeconfig()` - 加载 kubeconfig 文件（支持脱敏）
 - `list_kubeconfigs()` - 列出所有保存的 kubeconfig 文件
 - `delete_kubeconfig()` - 删除 kubeconfig 文件
@@ -815,7 +815,8 @@ MCP_JWT_SECRET=your-secret-key mcp-admin issue --user alice --expires 604800
 - **Operator RBAC 代理**：operator 调用 `grant_access` 时自动使用 admin 的高权限 kubeconfig 创建 K8s RBAC 资源
 - **ClusterRole 联动**：operator profile 的 `grant_access` 额外创建 ClusterRole + ClusterRoleBinding（nodes、namespaces、events、metrics、pods/eviction），`revoke_access` 同步清理
 - **集群级工具优雅降级**：`get_cluster_info` 对无集群级权限的用户返回部分结果（跳过 nodes/namespaces）；`get_cluster_events` 在 ns=all 失败时提示指定命名空间；`test_cluster_connection` 使用 VersionApi 无需集群级权限
-- **K8s 服务缓存失效**：`grant_access`/`revoke_access` 执行后自动失效目标用户的 K8s 客户端缓存，避免旧 token 被后续请求复用
+- **K8s 服务缓存失效**：`grant_access`/`revoke_access` 执行后自动失效目标用户的 K8s 客户端缓存，避免旧 token 被后续请求复用；`test_cluster_connection` 测试前自动失效该集群缓存并从磁盘重载 kubeconfig
+- **import_cluster 证书校验**：导入时自动校验客户端证书与私钥是否匹配，不匹配立即拒绝并提示改用文件路径方式导入
 - **RBAC 模板即时同步**：`grant_access` 使用 K8s API 直接创建/替换 Role，确保模板变更立即生效，无需手动删除旧 Role
 - **端口转发线程隔离**：port_forward 使用独立的 ApiClient 实例，避免 monkey-patch 污染共享 API 客户端
 - **Tar slip 防护**：从 Pod 拷贝文件时校验 tar 成员路径，防止路径穿越写入目标目录之外

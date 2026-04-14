@@ -2,11 +2,17 @@
 集群和配置管理工具模块
 整合集群管理和kubeconfig配置管理功能
 """
+import base64
+import logging
 import os
 import re
+import ssl
+import tempfile
 import yaml
 
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from utils.cluster_config import (
     ClusterInfo,
@@ -21,6 +27,58 @@ from utils.response import json_error, json_success
 from . import mcp
 
 _CLUSTER_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$')
+
+
+def _validate_cert_key_match(kubeconfig_data: dict) -> Optional[str]:
+    """校验 kubeconfig 中客户端证书与私钥是否匹配。
+
+    通过 ssl.SSLContext.load_cert_chain 加载解码后的 PEM，
+    如果证书公钥与私钥不匹配，OpenSSL 会抛出 KEY_VALUES_MISMATCH。
+
+    Returns:
+        错误信息字符串；匹配或不适用时返回 None
+    """
+    for user_entry in kubeconfig_data.get("users", []):
+        u = user_entry.get("user", {})
+        cert_b64 = u.get("client-certificate-data")
+        key_b64 = u.get("client-key-data")
+        if not cert_b64 or not key_b64:
+            continue
+        try:
+            cert_pem = base64.b64decode(cert_b64)
+            key_pem = base64.b64decode(key_b64)
+        except Exception as e:
+            return f"base64 解码失败: {e}"
+        cert_f = key_f = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as cf:
+                cf.write(cert_pem)
+                cert_f = cf.name
+            with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as kf:
+                kf.write(key_pem)
+                key_f = kf.name
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            ctx.load_cert_chain(cert_f, key_f)
+        except ssl.SSLError:
+            user_name = user_entry.get("name", "unknown")
+            return (
+                f"用户 '{user_name}' 的 client-certificate-data 与 client-key-data 不匹配。"
+                "这通常是 kubeconfig 内容在 AI 对话传输中被损坏导致的。"
+                "请改用文件路径方式导入：1) 将 kubeconfig 保存为本地文件；"
+                "2) 调用 import_cluster 时 kubeconfig 参数传入文件绝对路径"
+            )
+        except Exception as e:
+            logger.warning("证书校验时出现非 SSL 异常: %s", e)
+        finally:
+            for f in (cert_f, key_f):
+                if f:
+                    try:
+                        os.unlink(f)
+                    except OSError:
+                        pass
+    return None
 
 
 def _validate_cluster_name(name: str, strict: bool = False) -> Optional[str]:
@@ -48,11 +106,16 @@ def _validate_cluster_name(name: str, strict: bool = False) -> Optional[str]:
 async def import_cluster(name: str, kubeconfig: str, service_account: str = "default", 
                    namespace: str = "default", is_default: bool = False) -> str:
     """
-    导入集群配置
+    导入集群配置。
+
+    **推荐使用文件路径方式导入**：用户先将 kubeconfig 保存为本地文件，
+    然后传入文件的绝对路径（如 /tmp/kubeconfig.yaml 或 D:\\path\\to\\kubeconfig.yaml）。
+    直接传入 kubeconfig 内容时，长 base64 证书数据可能在 AI 对话传输中被损坏，
+    导致 TLS 证书校验失败。
     
     Args:
         name: 集群名称
-        kubeconfig: kubeconfig文件内容或路径
+        kubeconfig: kubeconfig 文件路径（推荐）或文件内容
         service_account: 服务账户名称，默认为default
         namespace: 默认命名空间，默认为default
         is_default: 是否设为默认集群，默认为False
@@ -84,6 +147,10 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
     missing = [f for f in required_fields if f not in parsed]
     if missing:
         return json_error(f"无效的 kubeconfig：缺少必需字段 {', '.join(missing)}")
+
+    cert_err = _validate_cert_key_match(parsed)
+    if cert_err:
+        return json_error(cert_err)
 
     kubeconfig_path = get_cluster_config_manager().save_kubeconfig(name, kubeconfig_content)
     
@@ -230,7 +297,7 @@ async def set_default_cluster(name: str) -> str:
 @handle_tool_errors
 async def test_cluster_connection(name: str) -> str:
     """
-    测试集群连接
+    测试集群连接（会从磁盘重新加载 kubeconfig，确保使用最新凭据）
     
     Args:
         name: 集群名称
@@ -241,8 +308,9 @@ async def test_cluster_connection(name: str) -> str:
     err = _validate_cluster_name(name, strict=False)
     if err:
         return json_error(err)
-    from services.factory import get_k8s_api_service
+    from services.factory import get_k8s_api_service, invalidate_cluster_service_cache
     cluster = get_cluster_config_manager().get_cluster(name)
+    invalidate_cluster_service_cache(cluster.kubeconfig_path)
     svc = get_k8s_api_service(cluster.kubeconfig_path)
     api_health = await svc.check_api_health()
     if api_health.get("status") != "healthy":

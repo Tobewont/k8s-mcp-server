@@ -75,6 +75,25 @@ def invalidate_user_service_cache(user_id: str) -> int:
     return removed
 
 
+def invalidate_cluster_service_cache(kubeconfig_path: Optional[str]) -> int:
+    """失效指定 kubeconfig_path 对应的服务缓存。
+
+    用于 kubeconfig 文件被外部更新（如 kubectl cp）或
+    test_cluster_connection 需要强制重新加载时调用。
+
+    Returns:
+        被清除的缓存条目数
+    """
+    key = _cache_key(kubeconfig_path)
+    removed = 0
+    with _cache_lock:
+        for cache in (_api_cache, _advanced_cache):
+            if key in cache:
+                del cache[key]
+                removed += 1
+    return removed
+
+
 def invalidate_current_user_cache() -> int:
     """失效当前请求用户的 K8s 服务缓存。
 

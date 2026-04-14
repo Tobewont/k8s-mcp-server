@@ -98,11 +98,11 @@ Alternative Stdio mode (no HTTP server needed):
 
 ### Cluster Management (cluster_tools.py)
 
-- `import_cluster()` — Import cluster config (with kubeconfig persistence)
+- `import_cluster()` — Import cluster config (**recommended: pass kubeconfig file path**; inline content may have base64 cert data corrupted during AI dialogue; auto-validates cert/key match on import)
 - `list_clusters(name?)` — List all clusters or get a specific cluster's details
 - `delete_cluster()` — Remove a cluster config
 - `set_default_cluster()` — Set the default cluster
-- `test_cluster_connection()` — Test cluster connectivity
+- `test_cluster_connection()` — Test cluster connectivity (auto-refreshes service cache, reloads kubeconfig from disk)
 - `load_kubeconfig()` — Load kubeconfig content (supports sensitive data masking)
 - `list_kubeconfigs()` — List saved kubeconfig files
 - `delete_kubeconfig()` — Delete a kubeconfig file
@@ -188,6 +188,8 @@ Client configuration with token (Cursor example):
 - **Token expiry cap** — Default max 90 days (configurable via `MCP_TOKEN_MAX_EXPIRY`)
 - **Audit logging** — All management operations recorded to per-user `operations.log`
 - **Graceful degradation** — Cluster-level tools return partial results for users without cluster-wide permissions
+- **K8s service cache invalidation** — `grant_access`/`revoke_access` auto-invalidate target user's K8s client cache; `test_cluster_connection` auto-invalidates cluster cache and reloads kubeconfig from disk
+- **import_cluster cert validation** — Auto-validates client certificate and key match on import; rejects mismatched pairs with guidance to use file-path import
 - **Tar slip protection** — Pod file copy validates tar member paths to prevent directory traversal
 
 ### Admin REST API
