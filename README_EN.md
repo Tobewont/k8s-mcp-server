@@ -113,7 +113,7 @@ xcopy /E /I skills\k8s-manage %USERPROFILE%\.cursor\skills\k8s-manage
 
 ### Cluster Management (cluster_tools.py)
 
-- `import_cluster()` — Import cluster config (**recommended: pass kubeconfig file path**; inline content may have base64 cert data corrupted during AI dialogue; auto-validates cert/key match on import)
+- `import_cluster()` — Import cluster config (accepts server-side file path or content; auto-validates cert/key match)
 - `list_clusters(name?)` — List all clusters or get a specific cluster's details
 - `delete_cluster()` — Remove a cluster config
 - `set_default_cluster()` — Set the default cluster

@@ -145,7 +145,7 @@ mcporter 配置：
 
 | 工具名 | 用途 | 关键参数 |
 |--------|------|----------|
-| `import_cluster` | 导入集群（**推荐传入 kubeconfig 文件路径**，直接传内容时长 base64 证书可能被 AI 对话损坏；自动校验证书/私钥匹配） | `name`, `kubeconfig`(文件路径或内容), `is_default` |
+| `import_cluster` | 导入集群配置（传入服务端文件路径或内容；含证书的 kubeconfig 需先上传文件再传路径，见下方「导入集群」流程） | `name`, `kubeconfig`(文件路径或内容), `is_default` |
 | `list_clusters` | 查看集群列表或单个详情 | `name`(可选) |
 | `delete_cluster` | 删除集群配置 | `name` |
 | `set_default_cluster` | 设置默认集群 | `name` |
@@ -363,6 +363,39 @@ CallMcpTool(server="k8s-mcp-server", toolName="manage_node", arguments={
 3. `manage_node`（action=cordon）— 标记不可调度
 4. `manage_node`（action=drain）— 排水驱逐 Pod
 5. 运维完毕后：`manage_node`（action=uncordon）— 恢复调度
+
+### 导入集群（含证书认证的 kubeconfig）
+
+证书认证的 kubeconfig 包含长 base64 数据，**不能将内容直接作为 MCP tool call 参数**（LLM 生成参数时会损坏 base64 字符串）。应先将文件上传到服务端，再调用 `import_cluster`：
+
+1. 确定 MCP Server 的 HTTP 基础地址（从 MCP 连接配置获取，如 `http://host:8000`）
+2. 使用 Shell 执行 `curl` 将文件上传到服务端：
+
+```bash
+curl -s -X POST \
+  -F "file=@/path/to/kubeconfig.yaml" \
+  -F "name=my-cluster" \
+  -H "Authorization: Bearer <K8S_MCP_TOKEN>" \
+  http://<MCP_SERVER>/admin/kubeconfigs/upload
+```
+
+未启用认证时省略 `-H "Authorization: ..."`。返回示例：
+
+```json
+{"ok": true, "name": "my-cluster", "path": "/app/data/users/admin/kubeconfigs/my-cluster.yaml"}
+```
+
+3. 调用 `import_cluster`，`kubeconfig` 传入返回的服务端路径：
+
+```
+CallMcpTool(server="k8s-mcp-server", toolName="import_cluster", arguments={
+  "name": "my-cluster",
+  "kubeconfig": "/app/data/users/admin/kubeconfigs/my-cluster.yaml",
+  "is_default": false
+})
+```
+
+> **原理**：`curl` 将文件内容走 HTTP 二进制传输，完全绕过 LLM，文件直接落盘到服务端的 kubeconfigs 目录。`import_cluster` 读取该路径完成校验和导入。对于 token 类 kubeconfig（无长 base64），可直接将内容传给 `import_cluster`。
 
 ---
 

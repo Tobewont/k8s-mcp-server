@@ -1,8 +1,9 @@
 """
-管理 API：签发用户 token、撤销 jti（需管理员 JWT，由中间件校验）
+管理 API：签发用户 token、撤销 jti、集群导入（需管理员 JWT，由中间件校验）
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from starlette.requests import Request
@@ -19,6 +20,8 @@ from utils.token_store import (
     mark_user_all_revoked,
     record_grant,
 )
+
+logger = logging.getLogger(__name__)
 
 
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$")
@@ -152,3 +155,82 @@ async def admin_cleanup_revoked(_request: Request) -> JSONResponse:
     removed = cleanup_expired()
     log_admin_api("cleanup_revoked", _caller_id(), {"removed": removed}, True)
     return JSONResponse({"ok": True, "removed": removed})
+
+
+_MAX_UPLOAD_SIZE = 1 * 1024 * 1024  # 1 MB
+
+
+async def internal_upload_kubeconfig(request: Request) -> JSONResponse:
+    """内部接口：接收 kubeconfig 文件并保存到用户的 kubeconfigs 目录。
+
+    供 AI Agent 在调用 import_cluster MCP tool 前，通过 curl 将本地文件
+    传输到服务端。文件内容走 HTTP 二进制传输，不经过 LLM。
+    此接口不包含集群导入逻辑，仅负责文件落盘。
+
+    用法: curl -s -F "file=@kubeconfig.yaml" -F "name=my-cluster" <URL>
+    """
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        try:
+            form = await request.form()
+        except Exception:
+            return JSONResponse(
+                {"error": "bad_request", "detail": "无法解析 multipart 表单"},
+                status_code=400,
+            )
+        upload = form.get("file")
+        if upload is None:
+            return JSONResponse(
+                {"error": "bad_request", "detail": "缺少 file 字段"},
+                status_code=400,
+            )
+        raw = await upload.read()
+        name = form.get("name", "")
+    else:
+        raw = await request.body()
+        name = request.query_params.get("name", "")
+
+    if not name:
+        return JSONResponse(
+            {"error": "bad_request", "detail": "缺少 name 参数"},
+            status_code=400,
+        )
+    if not raw:
+        return JSONResponse(
+            {"error": "bad_request", "detail": "上传内容为空"},
+            status_code=400,
+        )
+    if len(raw) > _MAX_UPLOAD_SIZE:
+        return JSONResponse(
+            {"error": "bad_request", "detail": f"文件超过 {_MAX_UPLOAD_SIZE // 1024} KB 限制"},
+            status_code=400,
+        )
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return JSONResponse(
+            {"error": "bad_request", "detail": "文件不是有效的 UTF-8 文本"},
+            status_code=400,
+        )
+
+    from tools.cluster_tools import _validate_cluster_name
+
+    name_err = _validate_cluster_name(name, strict=True)
+    if name_err:
+        return JSONResponse({"error": "bad_request", "detail": name_err}, status_code=400)
+
+    from utils.cluster_config import get_cluster_config_manager
+
+    try:
+        path = get_cluster_config_manager().save_kubeconfig(name, text)
+    except Exception as e:
+        logger.error("保存 kubeconfig 失败: %s", e)
+        return JSONResponse(
+            {"error": "server_error", "detail": "保存文件失败"},
+            status_code=500,
+        )
+
+    log_admin_api("upload_kubeconfig", _caller_id(), {"name": name, "path": path}, True)
+    return JSONResponse({"ok": True, "name": name, "path": path})

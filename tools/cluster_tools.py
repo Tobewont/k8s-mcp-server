@@ -103,23 +103,22 @@ def _validate_cluster_name(name: str, strict: bool = False) -> Optional[str]:
 
 @mcp.tool()
 @handle_tool_errors
-async def import_cluster(name: str, kubeconfig: str, service_account: str = "default", 
+async def import_cluster(name: str, kubeconfig: str, service_account: str = "default",
                    namespace: str = "default", is_default: bool = False) -> str:
     """
     导入集群配置。
 
-    **推荐使用文件路径方式导入**：用户先将 kubeconfig 保存为本地文件，
-    然后传入文件的绝对路径（如 /tmp/kubeconfig.yaml 或 D:\\path\\to\\kubeconfig.yaml）。
-    直接传入 kubeconfig 内容时，长 base64 证书数据可能在 AI 对话传输中被损坏，
-    导致 TLS 证书校验失败。
-    
+    kubeconfig 参数传入服务端文件路径或 kubeconfig 内容。
+    含证书认证的 kubeconfig（长 base64 数据）不应直接传内容，
+    AI Agent 会先将文件上传到服务端再传入路径。
+
     Args:
         name: 集群名称
-        kubeconfig: kubeconfig 文件路径（推荐）或文件内容
+        kubeconfig: 服务端 kubeconfig 文件路径或 kubeconfig 内容
         service_account: 服务账户名称，默认为default
         namespace: 默认命名空间，默认为default
         is_default: 是否设为默认集群，默认为False
-    
+
     Returns:
         导入结果
     """
@@ -127,7 +126,6 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
     if err:
         return json_error(err)
 
-    # 判断kubeconfig是文件路径还是内容
     kubeconfig_content = kubeconfig
     if os.path.isfile(kubeconfig):
         try:
@@ -153,15 +151,15 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
         return json_error(cert_err)
 
     kubeconfig_path = get_cluster_config_manager().save_kubeconfig(name, kubeconfig_content)
-    
+
     cluster_info = ClusterInfo(
         name=name,
         kubeconfig_path=kubeconfig_path,
         service_account=service_account,
         namespace=namespace,
-        is_default=is_default
+        is_default=is_default,
     )
-    
+
     success = get_cluster_config_manager().add_cluster(cluster_info)
     log_operation("import_cluster", "import", {"name": name, "is_default": is_default}, success)
 
@@ -176,15 +174,15 @@ async def import_cluster(name: str, kubeconfig: str, service_account: str = "def
                 "service_account": service_account,
                 "namespace": namespace,
                 "is_default": is_default,
-                "kubeconfig_path": kubeconfig_path
-            }
+                "kubeconfig_path": kubeconfig_path,
+            },
         }
     else:
         result = {
             "success": False,
-            "error": f"集群 '{name}' 已存在"
+            "error": f"集群 '{name}' 已存在",
         }
-    
+
     return json_success(result)
 
 @mcp.tool()
