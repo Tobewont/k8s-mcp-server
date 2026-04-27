@@ -13,7 +13,10 @@ data:
   
   # 数据目录配置
   DATA_DIR: "/app/data"
-  
+
+  # 备份保留天数（按文件修改时间计算，过期自动清理；0 表示永不清理）
+  MCP_BACKUP_RETENTION_DAYS: "90"
+
   # MCP配置
   MCP_MESSAGE_PATH: "/mcp/k8s-server/message/"
   MCP_SSE_PATH: "/mcp/k8s-server/sse"

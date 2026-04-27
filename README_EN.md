@@ -150,6 +150,14 @@ xcopy /E /I skills\k8s-manage %USERPROFILE%\.cursor\skills\k8s-manage
 - `restore_from_backup()` — Restore from backup file
 - `list_backups()` — List backup files (filterable by cluster/namespace)
 
+#### Automatic backup (safety net for mutations)
+
+`batch_update_resources` and `batch_delete_resources` **automatically** snapshot affected resources before applying changes. The backup path is returned in the tool response under the `auto_backup` field and can be passed directly to `restore_from_backup` for rollback. No user action required.
+
+- Format: YAML (consistent with namespace/resource backups)
+- Path: `data/backup/<cluster>/namespaces/<ns>/resources/<type>/<name>/<name>_auto_<timestamp>.yaml`
+- **Retention**: controlled by `MCP_BACKUP_RETENTION_DAYS` (default 90 days, based on file mtime). Expired files are cleaned up automatically on subsequent backup operations; set to `0` to disable cleanup.
+
 ## Multi-Tenant Authentication
 
 Enable JWT-based multi-tenant mode for team environments:
@@ -262,6 +270,9 @@ SSE_HOST=0.0.0.0                # Server listen address
 SSE_PORT=8000                   # Server port
 DATA_DIR=./data                 # Data root (cluster configs, kubeconfigs, backups, user ops logs)
 LOG_LEVEL=info                  # Log level
+
+# Backup retention (by file mtime, expired files auto-cleaned; 0 to disable)
+MCP_BACKUP_RETENTION_DAYS=90    # Default: 90 days
 
 # MCP paths
 MCP_MESSAGE_PATH=/mcp/k8s-server/message/

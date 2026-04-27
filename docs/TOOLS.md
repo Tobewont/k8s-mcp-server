@@ -108,8 +108,8 @@
 |--------|------|
 | `batch_list_resources` | 批量列出资源（如 `["pods","nodes","namespaces"]`） |
 | `batch_create_resources` | 批量创建资源，支持失败回滚 |
-| `batch_update_resources` | 批量更新资源（含扩缩容、标签等） |
-| `batch_delete_resources` | 批量删除资源，支持 `grace_period_seconds` |
+| `batch_update_resources` | 批量更新资源（含扩缩容、标签等）。**变更前自动备份**当前状态，备份路径返回在 `auto_backup` 字段，可用于回滚 |
+| `batch_delete_resources` | 批量删除资源，支持 `grace_period_seconds`。**删除前自动备份**当前状态，备份路径返回在 `auto_backup` 字段，可用于回滚 |
 | `batch_describe_resources` | 批量获取资源详情 |
 | `batch_restart_resources` | 批量重启 Deployment/StatefulSet/DaemonSet |
 | `batch_rollout_resources` | 批量发布操作：status/undo/pause/resume |
@@ -125,6 +125,12 @@
 | `backup_resource` | 备份指定资源 |
 | `restore_from_backup` | 从备份文件恢复资源 |
 | `list_backups` | 列出备份文件（可按集群/命名空间过滤），仅读本地目录 |
+
+**备份格式与保留策略**：
+
+- 所有备份统一为 YAML 格式，路径层级 `data/backup/<cluster>/namespaces/<ns>/resources/<type>/<name>/`
+- 自动备份文件名格式：`<name>_auto_<timestamp>.yaml`；手动备份：`<name>_<timestamp>.yaml`、`namespace_backup_<timestamp>.yaml`
+- 通过环境变量 `MCP_BACKUP_RETENTION_DAYS` 配置保留天数（默认 90 天，按文件 mtime 计算），超期文件在后续备份操作时自动清理；设为 `0` 可关闭清理
 
 ---
 

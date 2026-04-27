@@ -107,10 +107,19 @@ async def batch_update_resources(resources: str, namespace: str = "default",
 
     effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
     service = get_k8s_advanced_service(effective_path)
+
+    auto_backup = await service.auto_backup_resources(resources_list, namespace)
     result = await service.batch_update_resources(resources_list, namespace)
+    result["auto_backup"] = auto_backup
+
     updated = [r.get("name", r.get("kind", "")) for r in result.get("success", [])]
     failed = [r.get("name", r.get("kind", "")) for r in result.get("failed", [])]
     log_operation("batch_update_resources", "update", {"namespace": namespace, "updated": updated, "failed": failed}, len(failed) == 0)
+
+    success_count = len(result.get("success", []))
+    failed_count = len(result.get("failed", []))
+    if success_count > 0 and failed_count > 0:
+        return json_partial_success(result, success_count, failed_count)
     return json_success(result)
 
 
@@ -135,7 +144,11 @@ async def batch_delete_resources(resources: str, namespace: str = "default",
 
     effective_path = resolve_kubeconfig_path(cluster_name, kubeconfig_path)
     service = get_k8s_advanced_service(effective_path)
+
+    auto_backup = await service.auto_backup_resources(resources_list, namespace)
     result = await service.batch_delete_resources(resources_list, namespace, grace_period_seconds)
+    result["auto_backup"] = auto_backup
+
     deleted = [r.get("name", r.get("metadata", {}).get("name", "")) for r in result.get("success", [])]
     failed = [r.get("name", r.get("metadata", {}).get("name", "")) for r in result.get("failed", [])]
     log_operation("batch_delete_resources", "delete", {"namespace": namespace, "deleted": deleted, "failed": failed}, len(failed) == 0)

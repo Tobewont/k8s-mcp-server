@@ -8,7 +8,8 @@ import yaml
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from utils.backup_paths import get_backup_path, get_backup_search_path
+from config import BACKUP_RETENTION_DAYS
+from utils.backup_paths import cleanup_expired_backups, get_backup_path, get_backup_search_path
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,8 @@ class BackupRestoreMixin:
         CustomYamlDumper.add_representer(str, CustomYamlDumper.represent_str)
         with open(backup_file, 'w', encoding='utf-8') as f:
             yaml.dump(backup_data, f, sort_keys=False, allow_unicode=True, Dumper=CustomYamlDumper, default_flow_style=False)
+
+        cleanup_expired_backups(self.backup_dir, BACKUP_RETENTION_DAYS)
         return backup_file
 
     async def backup_specific_resource(self, resource_type: str, resource_name: str,
@@ -192,9 +195,11 @@ class BackupRestoreMixin:
             }
             backup_path = self._get_backup_path(cluster_name, namespace, resource_type, resource_name)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = os.path.join(backup_path, f"{resource_name}_{timestamp}.json")
+            backup_file = os.path.join(backup_path, f"{resource_name}_{timestamp}.yaml")
             with open(backup_file, 'w', encoding='utf-8') as f:
-                json.dump(backup_data, f, ensure_ascii=False, indent=2)
+                yaml.dump(backup_data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
+
+            cleanup_expired_backups(self.backup_dir, BACKUP_RETENTION_DAYS)
             return backup_file
         except Exception as e:
             raise Exception(f"备份资源失败: {e}")

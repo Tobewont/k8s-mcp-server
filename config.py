@@ -12,6 +12,9 @@ DATA_DIR = os.path.abspath(_env_data) if _env_data else os.path.join(_ROOT, "dat
 # 备份目录
 BACKUP_DIR = os.path.join(DATA_DIR, "backup")
 
+# 备份文件保留天数（按文件修改时间计算），超期自动清理；0 表示永不清理
+BACKUP_RETENTION_DAYS = int(os.getenv("MCP_BACKUP_RETENTION_DAYS", "90"))
+
 # Pod 文件读取单文件上限；内容经 MCP 响应 → LLM 上下文 → 客户端，受内存和上下文窗口限制，不适合大文件
 MAX_POD_FILE_SIZE = int(os.getenv("MAX_POD_FILE_SIZE", str(10 * 1024 * 1024)))  # 默认 10MB
 

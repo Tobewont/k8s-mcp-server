@@ -92,10 +92,11 @@ k8s-mcp-server 需要以下权限：
 通过 ConfigMap 管理的环境变量：
 
 ```yaml
-SSE_HOST: "0.0.0.0"          # 服务监听地址
-SSE_PORT: "8000"             # 服务端口
-LOG_LEVEL: "INFO"            # 日志级别
-DATA_DIR: "/app/data"        # 数据目录
+SSE_HOST: "0.0.0.0"                  # 服务监听地址
+SSE_PORT: "8000"                     # 服务端口
+LOG_LEVEL: "INFO"                    # 日志级别
+DATA_DIR: "/app/data"                # 数据目录
+MCP_BACKUP_RETENTION_DAYS: "90"      # 备份保留天数（按 mtime，过期自动清理；0 = 永不清理）
 ```
 
 ### 认证配置（可选）
