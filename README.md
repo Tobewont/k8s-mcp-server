@@ -44,18 +44,21 @@ python main.py
 # 或明确指定 stdio 模式
 python main.py --transport stdio
 
-# SSE 模式启动（支持HTTP接口）
+# Streamable HTTP 模式启动（推荐 Cursor 等 HTTP MCP 客户端）
+python main.py --transport streamable --host 0.0.0.0 --port 8000
+
+# SSE 模式启动（兼容旧 SSE 客户端）
 python main.py --transport sse --host 0.0.0.0 --port 8000
 
-# 或使用 uvicorn 直接启动SSE服务
+# 或使用 uvicorn 直接启动 HTTP 服务
 uvicorn tools:app --host 0.0.0.0 --port 8000
 ```
 
 **Stdio 模式**：通过标准输入输出与 MCP 客户端通信（默认）
 
-**SSE 模式**：通过 Server-Sent Events 接口（`http://localhost:8000/mcp/k8s-server/sse`）提供 HTTP 服务
+**SSE 模式**：通过 Server-Sent Events 接口（`GET http://localhost:8000/sse` + `POST http://localhost:8000/message`）提供兼容服务
 
-**Streamable HTTP 模式**：单一端点同时支持 GET(SSE) 和 POST，推荐 Cursor 等客户端使用（`http://localhost:8000/mcp/k8s-server/streamable`）
+**Streamable HTTP 模式**：标准 MCP Streamable HTTP 单端点协议，推荐 Cursor 等客户端使用（`http://localhost:8000/mcp`）
 
 #### Cursor MCP 配置
 
@@ -65,13 +68,13 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "url": "http://localhost:8000/mcp/k8s-server/streamable"
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
 ```
 
-**启动服务**：`python main.py --transport sse --port 8000`
+**启动服务**：`python main.py --transport streamable --port 8000`
 
 备选 Stdio 模式（无需先启动 HTTP 服务）：
 
@@ -599,9 +602,9 @@ DATA_DIR=./data                 # 集群配置、kubeconfig、备份等数据根
 MCP_BACKUP_RETENTION_DAYS=90    # 默认 90 天
 
 # MCP 路径配置
-MCP_MESSAGE_PATH=/mcp/k8s-server/message/
-MCP_SSE_PATH=/mcp/k8s-server/sse
-MCP_STREAMABLE_PATH=/mcp/k8s-server/streamable  # Streamable HTTP 端点
+MCP_STREAMABLE_PATH=/mcp        # Streamable HTTP 单端点
+MCP_SSE_PATH=/sse               # SSE 连接端点
+MCP_MESSAGE_PATH=/message       # SSE 消息 POST 端点
 
 # 日志级别
 LOG_LEVEL=info
@@ -795,7 +798,7 @@ test_cluster_connection(name="生产环境")
 ```bash
 # 1. 启动服务（启用认证）
 MCP_AUTH_ENABLED=true MCP_JWT_SECRET=your-secret-key \
-  python main.py --transport sse --host 0.0.0.0 --port 8000
+  python main.py --transport streamable --host 0.0.0.0 --port 8000
 
 # 2. 生成管理员 Token
 MCP_JWT_SECRET=your-secret-key mcp-admin bootstrap
@@ -815,7 +818,7 @@ MCP_JWT_SECRET=your-secret-key mcp-admin issue --user alice --expires 604800
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "url": "http://your-server:8000/mcp/k8s-server/streamable",
+      "url": "http://your-server:8000/mcp",
       "headers": {
         "Authorization": "Bearer eyJhbGci..."
       }

@@ -10,7 +10,7 @@
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `K8S_MCP_URL` | MCP Server 的 SSE / Streamable HTTP 地址 | `http://localhost:8000/mcp/k8s-server/streamable` |
+| `K8S_MCP_URL` | MCP Server 的 Streamable HTTP / SSE 地址 | `http://localhost:8000/mcp` |
 | `K8S_MCP_TOKEN` | JWT 认证 Token（MCP Server 启用认证时必填） | `eyJhbGciOi...` |
 | `K8S_MCP_SERVER` | mcporter 中注册的 MCP Server 名称 | `k8s-mcp-server` |
 
@@ -28,7 +28,7 @@
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "url": "http://localhost:8000/mcp/k8s-server/streamable"
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
@@ -46,7 +46,7 @@ CallMcpTool(server="k8s-mcp-server", toolName="<工具名>", arguments={...})
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "url": "http://localhost:8000/mcp/k8s-server/streamable",
+      "url": "http://localhost:8000/mcp",
       "headers": {
         "Authorization": "Bearer <K8S_MCP_TOKEN>"
       }
@@ -63,7 +63,7 @@ mcporter 配置（`~/.mcporter/config.json` 或项目下 `.mcporter.json`）：
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "url": "http://localhost:8000/mcp/k8s-server/streamable",
+      "url": "http://localhost:8000/mcp",
       "transport": "http",
       "headers": {
         "Authorization": "Bearer <K8S_MCP_TOKEN>"

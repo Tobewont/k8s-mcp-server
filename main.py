@@ -16,20 +16,20 @@ async def main():
     parser = argparse.ArgumentParser(description='Kubernetes MCP Server')
     parser.add_argument(
         '--transport',
-        choices=['stdio', 'sse'],
+        choices=['stdio', 'sse', 'streamable'],
         default='stdio',
         help='传输协议（默认: stdio）'
     )
     parser.add_argument(
         '--host',
         default=SSE_HOST,
-        help='SSE服务器主机（仅在SSE模式下使用）'
+        help='HTTP服务器主机（仅在sse/streamable模式下使用）'
     )
     parser.add_argument(
         '--port',
         type=int,
         default=SSE_PORT,
-        help='SSE服务器端口（仅在SSE模式下使用）'
+        help='HTTP服务器端口（仅在sse/streamable模式下使用）'
     )
     
     args = parser.parse_args()
@@ -44,11 +44,14 @@ async def main():
                 mcp.mcp_server.create_initialization_options()
             )
     
-    elif args.transport == 'sse':
-        # 使用 SSE 传输
+    elif args.transport in ('sse', 'streamable'):
+        # 使用 HTTP 传输（SSE 或 Streamable HTTP）
         try:
             import uvicorn
-            print(f"Starting Kubernetes MCP Server in SSE mode on {args.host}:{args.port}...", file=sys.stderr)
+            print(
+                f"Starting Kubernetes MCP Server in {args.transport} mode on {args.host}:{args.port}...",
+                file=sys.stderr,
+            )
             
             # 创建应用
             from tools import app
@@ -65,9 +68,9 @@ async def main():
             
         except Exception as e:
             if isinstance(e, ImportError):
-                print("SSE mode failed (missing uvicorn). Install: pip install uvicorn", file=sys.stderr)
+                print("HTTP mode failed (missing uvicorn). Install: pip install uvicorn", file=sys.stderr)
             else:
-                print(f"SSE mode failed: {e}", file=sys.stderr)
+                print(f"HTTP mode failed: {e}", file=sys.stderr)
             print("Falling back to stdio mode...", file=sys.stderr)
             async with stdio_server() as (read_stream, write_stream):
                 await mcp.mcp_server.run(

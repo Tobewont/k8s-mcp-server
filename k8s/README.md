@@ -97,6 +97,9 @@ SSE_PORT: "8000"                     # 服务端口
 LOG_LEVEL: "INFO"                    # 日志级别
 DATA_DIR: "/app/data"                # 数据目录
 MCP_BACKUP_RETENTION_DAYS: "90"      # 备份保留天数（按 mtime，过期自动清理；0 = 永不清理）
+MCP_STREAMABLE_PATH: "/mcp"          # Streamable HTTP 单端点
+MCP_SSE_PATH: "/sse"                 # SSE 连接端点
+MCP_MESSAGE_PATH: "/message"         # SSE 消息 POST 端点
 ```
 
 ### 认证配置（可选）
@@ -162,8 +165,11 @@ kubectl apply -f k8s/deployment.yaml
 # 集群内部访问
 kubectl port-forward svc/k8s-mcp-server 8000:8000
 
-# 访问 SSE 端点
-curl http://localhost:8000/mcp/k8s-server/sse
+# 访问 Streamable HTTP 端点（推荐 MCP 客户端使用）
+curl http://localhost:8000/mcp
+
+# 访问 SSE 兼容端点
+curl http://localhost:8000/sse
 ```
 
 ### 外部访问
@@ -175,7 +181,7 @@ curl http://localhost:8000/mcp/k8s-server/sse
 kubectl get svc k8s-mcp-server-external
 
 # 访问服务（假设节点IP为 192.168.1.100）
-curl http://192.168.1.100:30800/mcp/k8s-server/sse
+curl http://192.168.1.100:30800/mcp
 ```
 
 #### 方法2：Ingress（推荐）
@@ -188,7 +194,7 @@ kubectl apply -f k8s/service.yaml
 echo "192.168.1.100 k8s-mcp-server.local" >> /etc/hosts
 
 # 访问服务
-curl http://k8s-mcp-server.local/mcp/k8s-server/sse
+curl http://k8s-mcp-server.local/mcp
 ```
 
 ## 🔐 安全配置

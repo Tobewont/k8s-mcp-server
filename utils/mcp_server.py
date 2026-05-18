@@ -14,6 +14,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 
 from mcp.server.models import InitializationOptions
 from mcp.server.session import ServerSession
+from mcp.shared.message import SessionMessage
 from mcp.shared.session import RequestResponder
 from mcp import types, McpError
 from mcp.server.lowlevel.server import Server as _Server, LifespanResultT
@@ -32,18 +33,24 @@ class McpServer(_Server):
 
     async def run(
             self,
-            read_stream: MemoryObjectReceiveStream[types.JSONRPCMessage | Exception],
-            write_stream: MemoryObjectSendStream[types.JSONRPCMessage],
+            read_stream: MemoryObjectReceiveStream[SessionMessage | Exception],
+            write_stream: MemoryObjectSendStream[SessionMessage],
             initialization_options: InitializationOptions,
             raise_exceptions: bool = False,
-            scope: Scope | None = None
+            scope: Scope | None = None,
+            stateless: bool = False,
     ):
         logger.debug("scope: %s", scope)
         logger.debug("=" * 100)
         async with AsyncExitStack() as stack:
             lifespan_context = await stack.enter_async_context(self.lifespan(self))
             session = await stack.enter_async_context(
-                ServerSession(read_stream, write_stream, initialization_options)
+                ServerSession(
+                    read_stream,
+                    write_stream,
+                    initialization_options,
+                    stateless=stateless,
+                )
             )
             async with anyio.create_task_group() as tg:
                 async for message in session.incoming_messages:

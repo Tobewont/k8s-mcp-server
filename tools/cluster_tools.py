@@ -67,7 +67,7 @@ def _validate_cert_key_match(kubeconfig_data: dict) -> Optional[str]:
                 f"用户 '{user_name}' 的 client-certificate-data 与 client-key-data 不匹配，"
                 "这通常是 kubeconfig 内容在 AI 对话传输中被损坏导致的。"
                 "请改用文件上传方式：从当前 MCP 连接 URL 推导出服务端基础地址"
-                "（如 http://host:port/mcp/.../streamable → http://host:port），"
+                "（如 http://host:port/mcp 或 http://host:port/sse → http://host:port），"
                 "然后执行 curl -s -X POST "
                 '-F "file=@<本地kubeconfig路径>" -F "name=<集群名称>" '
                 '-H "Authorization: Bearer <Token>" '

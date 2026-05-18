@@ -5,6 +5,7 @@
 
 from __future__ import annotations as _annotations
 
+from contextlib import asynccontextmanager
 import logging as _logging
 from typing import Any, Sequence
 
@@ -46,6 +47,7 @@ from mcp.server.fastmcp.tools import ToolManager
 from mcp.server.fastmcp.utilities.logging import configure_logging, get_logger
 from mcp.server.lowlevel.server import lifespan as default_lifespan
 from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.types import Tool as MCPTool
 
 from config import MCP_ADMIN_API_PREFIX, MCP_AUTH_ENABLED, MCP_HEALTH_PATH
@@ -178,10 +180,17 @@ class FastMCP(_FastMCP):
         return await self._tool_manager.call_tool(name, arguments, context=context, convert_result=True)
 
     def sse_app(self) -> Starlette:
-        """Return an instance of the SSE server app with SSE and Streamable HTTP support."""
-        sse = SseServerTransport(self.settings.message_path)
-        streamable_path = getattr(
-            self.settings, "streamable_http_path", "/streamable"
+        """Return an HTTP app with SSE and real Streamable HTTP transports."""
+        sse = SseServerTransport(
+            self.settings.message_path,
+            security_settings=self.settings.transport_security,
+        )
+        streamable_path = getattr(self.settings, "streamable_http_path", "/mcp")
+        streamable_manager = StreamableHTTPSessionManager(
+            app=self.mcp_server,
+            json_response=self.settings.json_response,
+            stateless=self.settings.stateless_http,
+            security_settings=self.settings.transport_security,
         )
 
         async def handle_sse(request: Request) -> None:
@@ -201,39 +210,13 @@ class FastMCP(_FastMCP):
                 logger.error(f"Error in SSE connection: {e}")
                 raise
 
-        # Streamable HTTP: 单一端点同时支持 GET(SSE) 和 POST(消息)
-        streamable_transport = SseServerTransport(streamable_path)
-
-        async def handle_streamable_get(request: Request) -> None:
-            try:
-                async with streamable_transport.connect_sse(
-                    request.scope,
-                    request.receive,
-                    request._send,  # type: ignore[reportPrivateUsage]
-                ) as streams:
-                    await self.mcp_server.run(
-                        streams[0],
-                        streams[1],
-                        self._mcp_server.create_initialization_options(),
-                        scope=request.scope
-                    )
-            except Exception as e:
-                logger.error(f"Error in Streamable HTTP GET: {e}")
-                raise
-
         class StreamableASGIApp:
-            """ASGI 应用：按 HTTP 方法分发，不返回值由 send 发送响应"""
+            """ASGI 应用：官方 Streamable HTTP transport 入口。"""
 
             async def __call__(self, scope, receive, send):
                 if scope["type"] != "http":
                     return
-                request = Request(scope, receive, send)
-                if request.method == "GET":
-                    await handle_streamable_get(request)
-                else:
-                    await streamable_transport.handle_post_message(
-                        scope, receive, send
-                    )
+                await streamable_manager.handle_request(scope, receive, send)
 
         async def health(_request: Request) -> JSONResponse:
             return JSONResponse({"status": "ok"})
@@ -286,18 +269,24 @@ class FastMCP(_FastMCP):
             ),
             Route(self.settings.sse_path, endpoint=handle_sse, methods=["GET"]),
             Mount(self.settings.message_path, app=sse.handle_post_message),
-            # Streamable HTTP: ASGI 应用，GET=SSE 连接，POST=消息
+            # Streamable HTTP: 官方单端点协议（GET/POST/DELETE）
             Route(
                 streamable_path,
                 endpoint=StreamableASGIApp(),
-                methods=["GET", "POST"],
+                methods=["GET", "POST", "DELETE"],
             ),
         ]
+
+        @asynccontextmanager
+        async def lifespan(_app: Starlette):
+            async with streamable_manager.run():
+                yield
 
         return Starlette(
             debug=self.settings.debug,
             routes=routes,
             middleware=middleware,
+            lifespan=lifespan,
         )
 
     def create_app(self) -> Starlette:

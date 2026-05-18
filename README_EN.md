@@ -39,7 +39,10 @@ uv pip install -e .
 # Stdio mode (default, recommended for MCP clients)
 python main.py
 
-# SSE mode (HTTP interface)
+# Streamable HTTP mode (recommended for Cursor and HTTP MCP clients)
+python main.py --transport streamable --host 0.0.0.0 --port 8000
+
+# SSE mode (legacy HTTP interface)
 python main.py --transport sse --host 0.0.0.0 --port 8000
 
 # Or via uvicorn directly
@@ -54,13 +57,13 @@ Add to your Cursor MCP config (`~/.cursor/mcp.json` or project `.cursor/mcp.json
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "url": "http://localhost:8000/mcp/k8s-server/streamable"
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
 ```
 
-Then start the server: `python main.py --transport sse --port 8000`
+Then start the server: `python main.py --transport streamable --port 8000`
 
 Alternative Stdio mode (no HTTP server needed):
 
@@ -165,7 +168,7 @@ Enable JWT-based multi-tenant mode for team environments:
 ```bash
 # Start with auth
 MCP_AUTH_ENABLED=true MCP_JWT_SECRET=your-secret-key \
-  python main.py --transport sse --host 0.0.0.0 --port 8000
+  python main.py --transport streamable --host 0.0.0.0 --port 8000
 
 # Bootstrap admin token
 MCP_JWT_SECRET=your-secret-key mcp-admin bootstrap
@@ -184,7 +187,7 @@ Client configuration with token (Cursor example):
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "url": "http://your-server:8000/mcp/k8s-server/streamable",
+      "url": "http://your-server:8000/mcp",
       "headers": {
         "Authorization": "Bearer eyJhbGci..."
       }
@@ -275,9 +278,9 @@ LOG_LEVEL=info                  # Log level
 MCP_BACKUP_RETENTION_DAYS=90    # Default: 90 days
 
 # MCP paths
-MCP_MESSAGE_PATH=/mcp/k8s-server/message/
-MCP_SSE_PATH=/mcp/k8s-server/sse
-MCP_STREAMABLE_PATH=/mcp/k8s-server/streamable
+MCP_STREAMABLE_PATH=/mcp        # Streamable HTTP endpoint
+MCP_SSE_PATH=/sse               # SSE connection endpoint
+MCP_MESSAGE_PATH=/message       # SSE message POST endpoint
 
 # Auth (optional)
 MCP_AUTH_ENABLED=false          # Set true to enable JWT auth

@@ -20,4 +20,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
 # 默认启动命令
-CMD ["python", "main.py", "--transport", "sse"] 
+CMD ["python", "main.py", "--transport", "streamable"]
