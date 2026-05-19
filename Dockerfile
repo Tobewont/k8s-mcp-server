@@ -9,9 +9,7 @@ WORKDIR /app
 COPY . /app
 
 # 安装依赖
-RUN uv sync --frozen --no-dev && \
-    apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+RUN uv sync --frozen --no-dev
 
 # 设置环境变量
 ENV PATH="/app/.venv/bin:$PATH" \
