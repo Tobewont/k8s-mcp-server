@@ -4,12 +4,12 @@
 
 [中文](README.md) | **English**
 
-A Kubernetes MCP Server built on the FastMCP framework, providing comprehensive Kubernetes API operations through the MCP (Model Context Protocol) standard.
+A Kubernetes MCP Server built on the MCP Python SDK (FastMCP Server API), providing comprehensive Kubernetes API operations through the MCP (Model Context Protocol) standard.
 
 ## Key Features
 
 - **Pure API Implementation** — Entirely based on the Kubernetes Python Client; no kubectl required
-- **Standard MCP Protocol** — Built on FastMCP, fully compliant with the MCP specification
+- **Standard MCP Protocol** — Built on the MCP Python SDK FastMCP Server API, fully compliant with the MCP specification
 - **Multi-Cluster Management** — Import, switch, and test multiple cluster configurations with auto-loading defaults
 - **35 Tool Functions** — Full CRUD coverage for all major Kubernetes resources, including CRDs via dynamic discovery
 - **Multi-Tenant Auth** — Optional JWT authentication with per-user data isolation, permission profiles, and tool visibility filtering

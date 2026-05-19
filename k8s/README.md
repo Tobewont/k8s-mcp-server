@@ -357,5 +357,5 @@ kubectl delete pvc k8s-mcp-server-data
 ## 📚 参考资料
 
 - [Kubernetes 官方文档](https://kubernetes.io/docs/)
-- [FastMCP 框架文档](https://github.com/fastmcp/fastmcp)
+- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
 - [Kubernetes Python Client](https://github.com/kubernetes-client/python)

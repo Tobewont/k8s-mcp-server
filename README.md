@@ -4,12 +4,12 @@
 
 **[English](README_EN.md)** | 中文
 
-基于 FastMCP 框架的 Kubernetes MCP Server，提供完整的 Kubernetes API 操作功能。
+基于 MCP Python SDK（FastMCP Server API）的 Kubernetes MCP Server，提供完整的 Kubernetes API 操作功能。
 
 ## 🔥 主要特性
 
 - **纯 API 实现**：完全通过 Kubernetes Python Client 实现，无需依赖 kubectl 命令行工具
-- **标准 MCP 协议**：基于 FastMCP 框架，遵循 MCP (Model Context Protocol) 标准
+- **标准 MCP 协议**：基于 MCP Python SDK 的 FastMCP Server API，遵循 MCP (Model Context Protocol) 标准
 - **智能集群管理**：支持多集群配置管理，自动加载默认集群配置
 - **全面的 K8s 操作**：支持 35 个工具函数，覆盖所有主要 Kubernetes 资源的完整 CRUD 操作
 - **多租户认证**：可选 JWT 认证，支持多用户数据隔离、权限 Profile 分级、Tool 可见性过滤
@@ -671,7 +671,7 @@ MCP_ADMIN_API_PREFIX=/admin     # 管理 API 路由前缀
 
 ### 核心依赖
 
-- **fastmcp**: MCP 协议实现框架
+- **mcp**: MCP Python SDK 与 FastMCP Server API
 - **kubernetes**: Kubernetes Python 客户端库
 - **pyyaml**: YAML 配置文件解析
 - **pydantic**: 数据验证和序列化
