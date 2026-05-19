@@ -68,7 +68,7 @@ async def main():
             
         except Exception as e:
             if isinstance(e, ImportError):
-                print("HTTP mode failed (missing uvicorn). Install: pip install uvicorn", file=sys.stderr)
+                print("HTTP mode failed (missing uvicorn). Install: uv sync", file=sys.stderr)
             else:
                 print(f"HTTP mode failed: {e}", file=sys.stderr)
             print("Falling back to stdio mode...", file=sys.stderr)
@@ -80,5 +80,10 @@ async def main():
                 )
 
 
+def cli():
+    """Console script entrypoint."""
+    asyncio.run(main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    cli()

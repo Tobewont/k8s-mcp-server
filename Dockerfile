@@ -1,23 +1,25 @@
-# 使用官方Python 3.11.9 镜像作为基础镜像
-FROM python:3.11.9-slim as builder
+FROM python:3.12-slim
 
 # 设置工作目录
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
+
 WORKDIR /app
 
-# 安装uv
-RUN pip install --no-cache-dir uv
-
 # 复制项目文件
-COPY . /app 
+COPY . /app
 
-# 使用uv安装依赖
-RUN uv pip install --system -e .
+# 安装依赖
+RUN uv sync --frozen --no-dev && \
+    apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # 设置环境变量
-ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
 
-# 暴露应用端口
+# 暴露端口
 EXPOSE 8000
 
-# 默认启动命令
-CMD ["python", "main.py", "--transport", "streamable"]
+# 启动服务
+ENTRYPOINT ["k8s-mcp-server"]
+CMD ["--transport", "streamable"]

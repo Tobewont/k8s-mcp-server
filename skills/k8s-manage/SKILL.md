@@ -95,8 +95,8 @@ Cursor MCP 配置：
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "command": "python",
-      "args": ["main.py", "--transport", "stdio"],
+      "command": "k8s-mcp-server",
+      "args": ["--transport", "stdio"],
       "cwd": "<k8s-mcp-server项目路径>"
     }
   }
@@ -109,8 +109,8 @@ mcporter 配置：
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "command": "python",
-      "args": ["main.py", "--transport", "stdio"],
+      "command": "k8s-mcp-server",
+      "args": ["--transport", "stdio"],
       "cwd": "<k8s-mcp-server项目路径>",
       "transport": "stdio"
     }

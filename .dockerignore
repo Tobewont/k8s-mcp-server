@@ -58,7 +58,7 @@ coverage.xml
 # 文档
 docs/
 *.md
-README.md
+!README.md
 
 # 本地数据文件（运行时生成）
 data/
@@ -100,5 +100,5 @@ CONTRIBUTING.md
 .cursorindexingignore
 .specstory
 
-# UV锁文件
-uv.lock 
+# uv.lock 需要进入镜像，用于 uv sync --frozen 可复现安装
+!uv.lock

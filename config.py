@@ -4,6 +4,13 @@ Kubernetes MCP Server 配置文件
 import os
 from typing import Optional
 
+from dotenv import load_dotenv
+
+# 环境配置文件：默认读取当前工作目录下的 .env；不会覆盖已存在的系统环境变量
+ENV_FILE = os.getenv("MCP_ENV_FILE", ".env")
+ENV_FILE_ENCODING = os.getenv("MCP_ENV_FILE_ENCODING", "utf-8")
+load_dotenv(ENV_FILE, encoding=ENV_FILE_ENCODING, override=False)
+
 # 数据目录：优先 MCP_DATA_DIR，其次 DATA_DIR，否则包内 data/
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _env_data = os.getenv("MCP_DATA_DIR") or os.getenv("DATA_DIR")
@@ -114,7 +121,3 @@ if _dependencies_env.strip():
 
 # 时区配置（小时偏移，默认东八区）
 TIMEZONE_OFFSET_HOURS = int(os.getenv("TIMEZONE_OFFSET_HOURS", "8"))
-
-# 环境配置文件
-ENV_FILE = ".env"
-ENV_FILE_ENCODING = "utf-8"

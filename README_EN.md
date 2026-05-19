@@ -1,6 +1,6 @@
 # Kubernetes MCP Server
 
-![python](https://img.shields.io/badge/python-3.11%2B-blue) ![k8s-version](https://img.shields.io/badge/k8s-v1.25%2B-orange) ![license](https://img.shields.io/badge/license-MIT-green)
+![python](https://img.shields.io/badge/python-3.12%2B-blue) ![k8s-version](https://img.shields.io/badge/k8s-v1.25%2B-orange) ![license](https://img.shields.io/badge/license-MIT-green)
 
 [中文](README.md) | **English**
 
@@ -16,7 +16,7 @@ A Kubernetes MCP Server built on the FastMCP framework, providing comprehensive 
 - **Cluster Diagnostics** — Health checks, resource usage analysis, event collection, and node management (drain/cordon/uncordon)
 - **Backup & Restore** — Namespace-level and resource-level backup/restore, organized by cluster/namespace/resource type
 - **Change Validation & Preview** — Automatic validation for all write operations with detailed diff preview
-- **Dual Transport** — Supports both SSE (HTTP) and Stdio transport modes
+- **Multiple Transports** — Supports Stdio, standard Streamable HTTP, and legacy SSE-compatible transport
 - **Containerized Deployment** — Docker and Kubernetes manifests included
 - **Agent Skill Included** — Ships with `skills/k8s-manage/SKILL.md` for Cursor Agent / other AI agents, containing full tool reference, parameters, workflows, and connection guides
 
@@ -24,30 +24,58 @@ A Kubernetes MCP Server built on the FastMCP framework, providing comprehensive 
 
 ### Requirements
 
-- Python 3.11+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) 0.4+ (unified dependency & environment manager; replaces pip / venv)
 - No kubectl needed
 
-### Install
+### Install uv
 
 ```bash
-uv pip install -e .
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
+
+### Install Dependencies
+
+```bash
+# Sync runtime dependencies (creates .venv and installs everything from pyproject.toml)
+uv sync
+
+# Include dev tooling (pytest / pylint / black / mypy ...)
+uv sync --extra dev
+```
+
+> Use `uv add <pkg>` / `uv remove <pkg>` to manage dependencies. Do not use `pip install`.
+
+### Local Configuration
+
+```bash
+# Copy the example config and edit .env as needed
+cp env.example .env
+```
+
+The server automatically loads `.env` from the current working directory at startup without overriding existing OS environment variables. See `env.example` for the full list of supported settings.
 
 ### Start the Server
 
 ```bash
 # Stdio mode (default, recommended for MCP clients)
-python main.py
+k8s-mcp-server
 
 # Streamable HTTP mode (recommended for Cursor and HTTP MCP clients)
-python main.py --transport streamable --host 0.0.0.0 --port 8000
+k8s-mcp-server --transport streamable --host 0.0.0.0 --port 8000
 
 # SSE mode (legacy HTTP interface)
-python main.py --transport sse --host 0.0.0.0 --port 8000
+k8s-mcp-server --transport sse --host 0.0.0.0 --port 8000
 
 # Or via uvicorn directly
 uvicorn tools:app --host 0.0.0.0 --port 8000
 ```
+
+> `uv sync` installs `k8s-mcp-server`, `mcp-admin`, and `uvicorn` into `.venv/bin` (or `.venv\Scripts` on Windows). If the venv is not activated, use `uv run k8s-mcp-server ...` as a temporary wrapper.
 
 ### Cursor MCP Configuration
 
@@ -63,7 +91,7 @@ Add to your Cursor MCP config (`~/.cursor/mcp.json` or project `.cursor/mcp.json
 }
 ```
 
-Then start the server: `python main.py --transport streamable --port 8000`
+Then start the server: `k8s-mcp-server --transport streamable --port 8000`
 
 Alternative Stdio mode (no HTTP server needed):
 
@@ -71,8 +99,8 @@ Alternative Stdio mode (no HTTP server needed):
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "command": "python",
-      "args": ["main.py", "--transport", "stdio"],
+      "command": "k8s-mcp-server",
+      "args": ["--transport", "stdio"],
       "cwd": "/path/to/project"
     }
   }
@@ -168,7 +196,7 @@ Enable JWT-based multi-tenant mode for team environments:
 ```bash
 # Start with auth
 MCP_AUTH_ENABLED=true MCP_JWT_SECRET=your-secret-key \
-  python main.py --transport streamable --host 0.0.0.0 --port 8000
+  k8s-mcp-server --transport streamable --host 0.0.0.0 --port 8000
 
 # Bootstrap admin token
 MCP_JWT_SECRET=your-secret-key mcp-admin bootstrap
@@ -267,6 +295,8 @@ See [k8s/README.md](k8s/README.md) for detailed deployment guide including PVC, 
 ## Configuration
 
 ### Environment Variables
+
+The project provides `env.example` as the complete local configuration template. Copy it to `.env` for local startup. Common settings:
 
 ```bash
 SSE_HOST=0.0.0.0                # Server listen address

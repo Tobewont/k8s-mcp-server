@@ -1,6 +1,6 @@
 # Kubernetes MCP Server
 
-![python](https://img.shields.io/badge/python-3.11%2B-blue) ![k8s-version](https://img.shields.io/badge/k8s-v1.25%2B-orange) ![license](https://img.shields.io/badge/license-MIT-green)
+![python](https://img.shields.io/badge/python-3.12%2B-blue) ![k8s-version](https://img.shields.io/badge/k8s-v1.25%2B-orange) ![license](https://img.shields.io/badge/license-MIT-green)
 
 **[English](README_EN.md)** | 中文
 
@@ -15,7 +15,7 @@
 - **多租户认证**：可选 JWT 认证，支持多用户数据隔离、权限 Profile 分级、Tool 可见性过滤
 - **集群诊断**：提供集群健康检查、资源使用分析等诊断功能
 - **配置管理**：支持 kubeconfig 文件的保存、切换和管理
-- **双重传输协议**：同时支持 SSE 和 Stdio 两种传输方式
+- **多传输协议**：支持 Stdio、标准 Streamable HTTP 与 SSE 兼容传输
 - **容器化部署**：支持 Docker 和 Kubernetes 部署，包含完整的 k8s 清单文件
 - **资源备份恢复**：支持命名空间和单个资源的备份恢复，按集群/命名空间/资源类型层级存储
 - **变更验证预览**：自动验证资源操作并显示具体的变更内容，提供操作前的详细预览
@@ -25,34 +25,61 @@
 
 ### 环境要求
 
-- Python 3.11+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) 0.4+（统一管理依赖与运行环境，无需手动维护 venv 或 pip）
 - 无需安装 kubectl（完全通过 Python API 实现）
+
+### 安装 uv
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
 
 ### 安装依赖
 
 ```bash
-# 使用uv
-uv pip install -e .
+# 同步依赖：自动创建 .venv、按 pyproject.toml 解析并安装所有运行时依赖
+uv sync
+
+# 如需开发工具（pytest / pylint / black / mypy 等）
+uv sync --extra dev
 ```
+
+> 后续新增/移除依赖请使用 `uv add <pkg>` / `uv remove <pkg>`，不要再使用 `pip install`。
+
+### 本地配置
+
+```bash
+# 复制示例配置，按需修改 .env
+cp env.example .env
+```
+
+服务启动时会自动读取当前工作目录下的 `.env`，但不会覆盖已经存在的系统环境变量。完整配置项见 `env.example`。
 
 ### 启动服务
 
 ```bash
-# 默认 stdio 模式启动（推荐用于MCP客户端）
-python main.py
+# 默认 stdio 模式启动（推荐用于 MCP 客户端）
+k8s-mcp-server
 
 # 或明确指定 stdio 模式
-python main.py --transport stdio
+k8s-mcp-server --transport stdio
 
 # Streamable HTTP 模式启动（推荐 Cursor 等 HTTP MCP 客户端）
-python main.py --transport streamable --host 0.0.0.0 --port 8000
+k8s-mcp-server --transport streamable --host 0.0.0.0 --port 8000
 
 # SSE 模式启动（兼容旧 SSE 客户端）
-python main.py --transport sse --host 0.0.0.0 --port 8000
+k8s-mcp-server --transport sse --host 0.0.0.0 --port 8000
 
 # 或使用 uvicorn 直接启动 HTTP 服务
 uvicorn tools:app --host 0.0.0.0 --port 8000
 ```
+
+> `uv sync` 会把 `k8s-mcp-server`、`mcp-admin` 和 `uvicorn` 安装到 `.venv/bin`（Windows 为 `.venv\Scripts`）。如未激活虚拟环境，可以使用 `uv run k8s-mcp-server ...` 临时运行。
 
 **Stdio 模式**：通过标准输入输出与 MCP 客户端通信（默认）
 
@@ -74,7 +101,7 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 }
 ```
 
-**启动服务**：`python main.py --transport streamable --port 8000`
+**启动服务**：`k8s-mcp-server --transport streamable --port 8000`
 
 备选 Stdio 模式（无需先启动 HTTP 服务）：
 
@@ -82,8 +109,8 @@ uvicorn tools:app --host 0.0.0.0 --port 8000
 {
   "mcpServers": {
     "k8s-mcp-server": {
-      "command": "python",
-      "args": ["main.py", "--transport", "stdio"],
+      "command": "k8s-mcp-server",
+      "args": ["--transport", "stdio"],
       "cwd": "项目路径"
     }
   }
@@ -590,6 +617,8 @@ readinessProbe:
 
 ### 环境变量
 
+项目提供 `env.example` 作为完整示例，可复制为 `.env` 用于本地启动。以下是常用配置：
+
 ```bash
 # SSE 服务配置
 SSE_HOST=0.0.0.0
@@ -749,7 +778,7 @@ async def new_api_method(self, param1: str, grace_period_seconds: int = None) ->
 
 ```bash
 # 启动服务
-python main.py
+k8s-mcp-server
 
 # 在 MCP 客户端中导入集群
 import_cluster(
@@ -798,7 +827,7 @@ test_cluster_connection(name="生产环境")
 ```bash
 # 1. 启动服务（启用认证）
 MCP_AUTH_ENABLED=true MCP_JWT_SECRET=your-secret-key \
-  python main.py --transport streamable --host 0.0.0.0 --port 8000
+  k8s-mcp-server --transport streamable --host 0.0.0.0 --port 8000
 
 # 2. 生成管理员 Token
 MCP_JWT_SECRET=your-secret-key mcp-admin bootstrap
@@ -877,6 +906,8 @@ mcp-admin grant --user bob --cluster prod --namespace default --profile develope
 mcp-admin revoke-access --user bob --cluster prod --namespace default  # 撤销权限
 mcp-admin list-profiles      # 列出所有 Profile
 ```
+
+> 未激活虚拟环境时可使用 `uv run mcp-admin ...` 临时运行。
 
 ### 5. 容器化部署
 

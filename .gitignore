@@ -126,4 +126,4 @@ data/
 .specstory
 
 # uv
-uv.lock
+# uv.lock 需要提交，用于 Docker/CI 的 --frozen 可复现安装
