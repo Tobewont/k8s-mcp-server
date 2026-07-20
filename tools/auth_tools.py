@@ -73,9 +73,22 @@ async def whoami() -> str:
 
     now = int(time.time())
     grants = get_user_grants(uid)
+
+    # 计算有效过期时间时需考虑延期表：effective_exp = max(expires_at, extended_until)
+    from utils.extension_store import get_extension
+
+    def _effective_expires_at(grant: dict) -> int:
+        exp_at = grant.get("expires_at", 0)
+        g_jti = grant.get("jti")
+        if g_jti:
+            ext = get_extension(str(g_jti))
+            if ext and isinstance(ext.get("extended_until"), int):
+                return max(exp_at, ext["extended_until"])
+        return exp_at
+
     active_grants = [
         g for g in grants
-        if g.get("status") == "active" and g.get("expires_at", 0) > now
+        if g.get("status") == "active" and _effective_expires_at(g) > now
     ]
 
     current_grant = None
@@ -86,7 +99,8 @@ async def whoami() -> str:
 
     remaining = None
     if current_grant and current_grant.get("expires_at"):
-        remaining = max(0, current_grant["expires_at"] - now)
+        effective_exp = _effective_expires_at(current_grant)
+        remaining = max(0, effective_exp - now)
 
     access = get_user_access_grants(uid, active_only=True)
     access_summary = [
@@ -193,14 +207,19 @@ def _user_has_elevated_grants(uid: str) -> bool:
 
 
 def _user_has_admin_tokens(uid: str) -> bool:
-    """用户是否持有未过期且未撤销的 admin 角色 token（同时检查撤销表）"""
+    """用户是否持有未过期且未撤销的 admin 角色 token（含服务端延期表判定）"""
+    from utils.extension_store import get_extension
     from utils.revocation_store import is_revoked
     now = int(time.time())
     for g in get_user_grants(uid):
-        if (g.get("role") == ROLE_ADMIN
-                and g.get("status") == "active"
-                and g.get("expires_at", 0) > now
-                and not is_revoked(g.get("jti", ""))):
+        if g.get("role") != ROLE_ADMIN or g.get("status") != "active":
+            continue
+        if is_revoked(g.get("jti", "")):
+            continue
+        exp_at = g.get("expires_at", 0)
+        ext = get_extension(str(g.get("jti", ""))) if g.get("jti") else None
+        effective_exp = max(exp_at, ext["extended_until"]) if ext else exp_at
+        if effective_exp > now:
             return True
     return False
 
@@ -262,17 +281,18 @@ async def admin_manage_users(
     Args:
         action: 操作类型，支持：
             - issue_token: 为用户签发 JWT（需 user_id，可选 role/expires_in_seconds）
+            - extend_token: 延长 token 实际生效时间（token 字符串不变，需 jti 或 user_id；按 user_id 时只续期最近的一个 token，可选 expires_in_seconds，默认 7776000 即 90 天）
             - revoke_token: 按 jti 撤销单个 token（需 jti）
             - revoke_user: 撤销某用户全部 token（需 user_id）
-            - list_users: 列出所有已签发用户及 token 状态摘要
-            - get_user: 查看某用户的全部签发记录与权限授权（需 user_id）
+            - list_users: 列出所有已签发用户及 token 状态摘要（含延期 token 数）
+            - get_user: 查看某用户的全部签发记录与权限授权（含每条 grant 的 _effective_expires_at / _extended / _effective_status）
             - grant_access: 为用户分配集群/命名空间权限（需 user_id/cluster_name/namespace/profile，自动在 K8s 创建 Role+RoleBinding+SA）
             - revoke_access: 撤销用户的集群/命名空间权限（需 user_id/cluster_name/namespace，自动清理 K8s 资源）
             - inspect: 查看用户在 K8s 中的实际 ServiceAccount 权限（需 user_id/cluster_name/namespace）
         user_id: 用户标识
         role: 角色 user/admin（仅 issue_token，operator 调用时只能为 user）
-        expires_in_seconds: Token 有效期秒数（仅 issue_token，默认 86400，最小 60）
-        jti: Token 的 jti（仅 revoke_token）
+        expires_in_seconds: Token 有效期秒数（issue_token 默认 86400，最小 60；extend_token 默认 7776000 即 90 天，受 MCP_TOKEN_MAX_EXPIRY 上限约束）
+        jti: Token 的 jti（revoke_token / extend_token）
         cluster_name: 集群名称（grant_access/revoke_access/inspect）
         namespace: 命名空间（grant_access/revoke_access/inspect）
         profile: 权限 Profile 名称（仅 grant_access；operator 调用时只能为 viewer/developer）
@@ -292,6 +312,8 @@ async def admin_manage_users(
         id_err = _validate_identifier(user_id or "", "user_id")
         if id_err:
             return json_error(f"issue_token: {id_err}")
+        if user_id == "admin":
+            return json_error("user_id 'admin' 系统保留，仅由 mcp-admin bootstrap 生成")
         if is_op and user_id == current_user_id.get():
             return json_error("operator 不能为自己签发 token")
         if is_op and (_user_has_admin_tokens(user_id) or _user_has_elevated_grants(user_id)):
@@ -335,6 +357,11 @@ async def admin_manage_users(
                 return json_error("operator 无权撤销拥有 operator/admin 权限的用户的 token")
         revoke_jti(jti)
         found_uid = mark_grant_revoked(jti)
+        try:
+            from utils.extension_store import remove_extension
+            remove_extension(jti)
+        except Exception:
+            pass
         log_operation("admin_manage_users", "revoke_token", {
             "jti": jti, "target_user": found_uid,
         }, True)
@@ -354,6 +381,11 @@ async def admin_manage_users(
             return json_error("operator 无权撤销拥有 operator/admin 权限的用户")
         revoked_jtis = mark_user_all_revoked(user_id)
         revoke_jtis_bulk(revoked_jtis)
+        try:
+            from utils.extension_store import remove_extensions_bulk
+            remove_extensions_bulk(revoked_jtis)
+        except Exception:
+            pass
         log_operation("admin_manage_users", "revoke_user", {
             "target_user": user_id, "revoked_count": len(revoked_jtis),
         }, True)
@@ -364,12 +396,113 @@ async def admin_manage_users(
             "revoked_jtis": revoked_jtis,
         })
 
+    # ---------- extend_token ----------
+    if action == "extend_token":
+        from utils.extension_store import set_extension
+        from utils.token_store import get_grant_by_jti, get_user_active_jtis
+        if not jti and not user_id:
+            return json_error("extend_token 需要 jti 或 user_id")
+        exp = expires_in_seconds if expires_in_seconds is not None else 7776000
+        if exp < 60:
+            return json_error("expires_in_seconds 至少 60")
+        if exp > MCP_TOKEN_MAX_EXPIRY:
+            return json_error(f"expires_in_seconds 不能超过 {MCP_TOKEN_MAX_EXPIRY}（{MCP_TOKEN_MAX_EXPIRY // 86400} 天）")
+        new_until = int(time.time()) + exp
+
+        if jti:
+            if not isinstance(jti, str):
+                return json_error("jti 必须是字符串")
+            grant = get_grant_by_jti(jti)
+            if not grant:
+                return json_error(f"未找到 jti={jti} 的签发记录")
+            if is_op:
+                if grant.get("role") == ROLE_ADMIN:
+                    return json_error("operator 无权延期 admin 角色的 token")
+                target_uid = grant.get("user_id")
+                if target_uid and (_user_has_admin_tokens(target_uid) or _user_has_elevated_grants(target_uid)):
+                    return json_error("operator 无权延期拥有 operator/admin 权限的用户的 token")
+            if grant.get("status") == "revoked":
+                return json_error("该 token 已撤销，无法延期")
+            if str(grant.get("user_id", "")) == "admin":
+                return json_error("user_id 'admin' 不纳入延期管理")
+            try:
+                rec = set_extension(jti, new_until, str(grant.get("user_id", "")), str(grant.get("role", "")))
+            except ValueError as e:
+                return json_error(str(e))
+            log_operation("admin_manage_users", "extend_token", {
+                "target_user": rec.get("user_id"), "jti": jti,
+                "extended_until": rec["extended_until"], "expires_in": exp,
+            }, True)
+            return json_success({
+                "action": "extend_token",
+                "jti": jti,
+                "user_id": rec["user_id"],
+                "role": rec["role"],
+                "extended_until": rec["extended_until"],
+                "expires_in_seconds": exp,
+            })
+
+        id_err2 = _validate_identifier(user_id or "", "user_id")
+        if id_err2:
+            return json_error(f"extend_token: {id_err2}")
+        if user_id == "admin":
+            return json_error("user_id 'admin' 不纳入延期管理")
+        if is_op and (_user_has_admin_tokens(user_id) or _user_has_elevated_grants(user_id)):
+            return json_error("operator 无权延期拥有 operator/admin 权限的用户")
+        active = get_user_active_jtis(user_id)
+        if not active:
+            return json_error(f"用户 {user_id} 没有可续期的 token（全部已撤销）")
+        grants_map = {g["jti"]: g for g in get_user_grants(user_id) if g.get("status") == "active" and "jti" in g}
+        latest_jti = max(active, key=lambda j: grants_map.get(j, {}).get("expires_at", 0))
+        latest_grant = grants_map.get(latest_jti, {})
+        rec = set_extension(latest_jti, new_until, user_id, str(latest_grant.get("role", "")))
+        log_operation("admin_manage_users", "extend_token", {
+            "target_user": user_id, "jti": latest_jti,
+            "extended_until": rec["extended_until"], "expires_in": exp,
+        }, True)
+        return json_success({
+            "action": "extend_token",
+            "user_id": user_id,
+            "jti": latest_jti,
+            "role": rec["role"],
+            "extended_until": rec["extended_until"],
+            "expires_in_seconds": exp,
+        })
+
     # ---------- list_users ----------
     if action == "list_users":
+        from utils.extension_store import list_extensions, get_extension as _get_ext
         users = list_all_users()
         if is_op:
             users = [u for u in users if not _user_has_admin_tokens(u["user_id"])
                      and not _user_has_elevated_grants(u["user_id"])]
+        ext_by_user: dict = {}
+        for _jti, rec in list_extensions().items():
+            uid = rec.get("user_id")
+            if uid:
+                ext_by_user[uid] = ext_by_user.get(uid, 0) + 1
+        now_ts = int(time.time())
+        for u in users:
+            u["extended_tokens"] = ext_by_user.get(u["user_id"], 0)
+            if u["extended_tokens"] > 0:
+                uid_grants = get_user_grants(u["user_id"])
+                eff_active = 0
+                eff_expired = 0
+                for g in uid_grants:
+                    if g.get("status") != "active":
+                        continue
+                    exp_at = g.get("expires_at", 0)
+                    g_jti = g.get("jti")
+                    if g_jti:
+                        ext_rec = _get_ext(str(g_jti))
+                        if ext_rec and isinstance(ext_rec.get("extended_until"), int):
+                            exp_at = max(exp_at, ext_rec["extended_until"])
+                    if exp_at > now_ts:
+                        eff_active += 1
+                    else:
+                        eff_expired += 1
+                u["active"] = eff_active
+                u["expired"] = eff_expired
         return json_success({
             "action": "list_users",
             "users": users,
@@ -378,6 +511,7 @@ async def admin_manage_users(
 
     # ---------- get_user ----------
     if action == "get_user":
+        from utils.extension_store import get_extension
         id_err = _validate_identifier(user_id or "", "user_id")
         if id_err:
             return json_error(f"get_user: {id_err}")
@@ -387,7 +521,11 @@ async def admin_manage_users(
         now = int(time.time())
         for g in token_grants:
             exp_at = g.get("expires_at", 0)
-            if g.get("status") == "active" and exp_at <= now:
+            ext = get_extension(str(g.get("jti", ""))) if g.get("jti") else None
+            effective_exp = max(exp_at, ext["extended_until"]) if ext else exp_at
+            g["_effective_expires_at"] = effective_exp
+            g["_extended"] = bool(ext)
+            if g.get("status") == "active" and effective_exp <= now:
                 g["_effective_status"] = "expired"
             else:
                 g["_effective_status"] = g.get("status", "unknown")

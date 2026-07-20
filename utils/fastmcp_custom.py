@@ -58,7 +58,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
-from .admin_routes import admin_cleanup_revoked, admin_issue_token, admin_list_revoked, admin_list_users, admin_revoke_token, internal_upload_kubeconfig
+from .admin_routes import (
+    admin_cleanup_revoked,
+    admin_extend_token,
+    admin_issue_token,
+    admin_list_revoked,
+    admin_list_users,
+    admin_revoke_token,
+    internal_upload_kubeconfig,
+)
 from .jwt_middleware import JWTAuthMiddleware
 from .mcp_server import McpServer
 
@@ -260,6 +268,11 @@ class FastMCP(_FastMCP):
             Route(
                 admin_prefix + "/tokens/cleanup",
                 endpoint=admin_cleanup_revoked,
+                methods=["POST"],
+            ),
+            Route(
+                admin_prefix + "/tokens/extend",
+                endpoint=admin_extend_token,
                 methods=["POST"],
             ),
             Route(

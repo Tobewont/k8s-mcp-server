@@ -202,7 +202,7 @@ MCP_AUTH_ENABLED=true MCP_JWT_SECRET=your-secret-key \
 MCP_JWT_SECRET=your-secret-key mcp-admin bootstrap
 
 # Issue user tokens
-MCP_JWT_SECRET=your-secret-key mcp-admin issue --user alice --expires 604800
+MCP_JWT_SECRET=your-secret-key mcp-admin issue --user alice --expires 7776000
 
 # Grant cluster access (via MCP tool as admin)
 # admin_manage_users(action="grant_access", user_id="alice",
@@ -251,9 +251,10 @@ Client configuration with token (Cursor example):
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/admin/tokens/issue` | POST | Issue token |
+| `/admin/tokens/extend` | POST | Extend token effective lifetime without changing the token string (body: `{"jti": "..."}` or `{"user_id": "..."}`, optional `expires_in_seconds` default 7776000; by user_id only extends the most recent token; `user_id == 'admin'` is excluded) |
 | `/admin/tokens/revoke` | POST | Revoke token |
 | `/admin/tokens/revoked` | GET | List revoked tokens |
-| `/admin/tokens/cleanup` | POST | Clean up expired revocations |
+| `/admin/tokens/cleanup` | POST | Clean up expired revocations and extensions |
 | `/admin/users` | GET | List all users |
 | `/admin/kubeconfigs/upload` | POST | Upload kubeconfig file (fallback for `import_cluster` when cert validation fails due to AI model content corruption; binary HTTP transfer bypasses LLM) |
 
@@ -262,9 +263,13 @@ Client configuration with token (Cursor example):
 ```bash
 mcp-admin bootstrap                    # Generate admin token
 mcp-admin issue --user bob             # Issue user token
+mcp-admin extend --jti xxx --expires 7776000      # Extend a single token (token string unchanged; user_id == 'admin' not extendable)
+mcp-admin extend --user bob --expires 7776000     # Extend the most recent token of a user
+mcp-admin migrate-extensions [--dry-run]         # Migrate active grants in user_grants.json into the extensions table (excludes user_id == 'admin', idempotent)
+                                                 # Auto-runs on startup only if token_extensions.json is missing; run with --overwrite later to backfill new users
 mcp-admin revoke --jti xxx             # Revoke a token
 mcp-admin revoke-user --user bob       # Revoke all user tokens
-mcp-admin list-users                   # List all users
+mcp-admin list-users                   # List all users (includes extended_tokens count)
 mcp-admin grant --user bob --cluster prod --namespace default --profile developer
 mcp-admin revoke-access --user bob --cluster prod --namespace default
 mcp-admin list-profiles                # List all profiles

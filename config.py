@@ -47,6 +47,10 @@ AUTH_REVOCATION_FILE = os.path.join(DATA_DIR, "auth", "revoked_jtis.json")
 # 签发记录文件（user_id → [grants]）
 AUTH_GRANTS_FILE = os.path.join(DATA_DIR, "auth", "user_grants.json")
 
+# Token 延期表文件（jti → extended_until / user_id / role / updated_at）
+# 用于在不更换 token 字符串的前提下延长其有效时间：effective_exp = max(jwt.exp, extended_until)
+AUTH_EXTENSIONS_FILE = os.path.join(DATA_DIR, "auth", "token_extensions.json")
+
 # 健康检查路径（无需鉴权）
 MCP_HEALTH_PATH = os.getenv("MCP_HEALTH_PATH", "/health")
 

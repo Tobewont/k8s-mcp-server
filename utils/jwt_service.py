@@ -54,10 +54,15 @@ def decode_and_verify(
     token: str, *, secret: Optional[str] = None, verify_exp: bool = True
 ) -> Dict[str, Any]:
     """
-    解码并校验签名与 exp；检查撤销表。
+    解码并校验签名与 exp；检查撤销表与延期表。
+
+    延期语义：若 jti 在延期表中有记录，effective_exp = max(jwt.exp, extended_until)；
+    否则 effective_exp = jwt.exp。verify_exp=True 时按 effective_exp 校验。
+    这样可以在不更换 token 字符串的前提下延长其有效时间。
     """
     sec = secret or _require_secret()
-    options = {"verify_exp": verify_exp}
+    # 不让 PyJWT 直接拒掉过期 token：先验签名，过期由我们结合延期表自行判断
+    options = {"verify_exp": False}
     payload = jwt.decode(
         token,
         sec,
@@ -70,6 +75,14 @@ def decode_and_verify(
         raise InvalidTokenError("缺少 jti")
     if is_revoked(str(jti)):
         raise InvalidTokenError("token 已撤销")
+
+    if verify_exp:
+        from utils.extension_store import get_extension
+        jwt_exp = int(payload.get("exp", 0))
+        ext = get_extension(str(jti))
+        effective_exp = max(jwt_exp, ext["extended_until"]) if ext else jwt_exp
+        if int(time.time()) > effective_exp:
+            raise InvalidTokenError("token 已过期")
     return payload
 
 

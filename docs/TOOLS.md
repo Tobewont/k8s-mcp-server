@@ -23,7 +23,7 @@
 | 工具名 | 作用 | 所需角色 |
 |--------|------|----------|
 | `whoami` | 查看当前用户身份（ID、角色、Token 剩余有效期、已授权的集群与权限） | 任意已认证用户 |
-| `admin_manage_users` | 用户与 Token 管理：签发/撤销 Token、授权/撤销集群权限、检查用户实际 K8s 权限 | admin / operator |
+| `admin_manage_users` | 用户与 Token 管理：签发/延期/撤销 Token、授权/撤销集群权限、检查用户实际 K8s 权限 | admin / operator |
 | `admin_manage_profiles` | 权限 Profile 模板管理：查看/创建/更新/删除自定义 profile | admin |
 
 ### admin_manage_users 支持的 action
@@ -31,17 +31,20 @@
 | action | 说明 | 必需参数 | operator 限制 |
 |--------|------|----------|--------------|
 | `issue_token` | 为用户签发 JWT | user_id, [role, expires_in_seconds] | 只能签发 role=user；不能自我签发；不能为高权限用户签发 |
+| `extend_token` | 延长 Token 实际生效时间（token 字符串不变，仅更新服务端延期表；按 user_id 时只续期最近的一个 token；`user_id == 'admin'` 不纳入延期管理） | jti 或 user_id, [expires_in_seconds=7776000] | operator 不能延期 admin 角色 token；不能延期高权限用户的 token；`user_id == 'admin'` 不可延期 |
 | `revoke_token` | 按 jti 撤销单个 Token | jti | 不能撤销 admin 角色 token；不能撤销高权限用户的 token |
 | `revoke_user` | 撤销某用户全部 Token | user_id | 不能操作拥有 admin/operator 权限的用户 |
-| `list_users` | 列出所有已签发用户及状态摘要 | — | 自动过滤 admin/operator 级别用户 |
-| `get_user` | 查看某用户的签发记录与权限授权 | user_id | 不能查看 admin/operator 级别用户 |
+| `list_users` | 列出所有已签发用户及状态摘要（含延期 token 数） | — | 自动过滤 admin/operator 级别用户 |
+| `get_user` | 查看某用户的签发记录与权限授权（含每条 grant 的 `_effective_expires_at`/`_extended`/`_effective_status`） | user_id | 不能查看 admin/operator 级别用户 |
 | `grant_access` | 为用户分配集群/命名空间权限（自动创建 K8s Role+RoleBinding+SA） | user_id, cluster_name, namespace, profile | 只能分配 viewer/developer；不能自我授权；使用 admin kubeconfig 创建 K8s RBAC |
 | `revoke_access` | 撤销用户的集群/命名空间权限（自动清理 K8s 资源） | user_id, cluster_name, namespace | 只能撤销 viewer/developer |
 | `inspect` | 查看用户在 K8s 中的实际 ServiceAccount 权限 | user_id, cluster_name, namespace | 无限制 |
 
 > **输入校验**：`user_id`、`cluster_name`、`namespace`、`profile` 均需满足格式要求（字母数字开头，只允许字母、数字、连字符、下划线、点，长度 1-253），防止路径穿越攻击。
 >
-> **审计日志**：`issue_token`、`revoke_token`、`revoke_user`、`grant_access`、`revoke_access` 操作均记录到调用者的 `operations.log`。
+> **审计日志**：`issue_token`、`extend_token`、`revoke_token`、`revoke_user`、`grant_access`、`revoke_access` 操作均记录到调用者的 `operations.log`。
+>
+> **Token 延期机制**：通过服务端延期表 `data/auth/token_extensions.json` 实现"token 不变 + 延长有效时间"：`effective_exp = max(jwt.exp, extended_until)`。`user_id == 'admin'`（全局 admin，由 `mcp-admin bootstrap` 签发）不纳入延期管理；其它用户（含被分配 admin 角色的）均可通过 CLI `mcp-admin extend` 或 `POST /admin/tokens/extend` 延期。
 
 ### admin_manage_profiles 支持的 action
 
@@ -188,8 +191,8 @@
 | batch_create/update/delete/restart_resources | batch_list, batch_describe, batch_top |
 | batch_rollout（仅 undo/pause/resume） | batch_rollout（action=status） |
 | manage_node（drain/cordon/uncordon） | check_*, get_cluster_events, get_cluster_resource_usage |
-| admin_manage_users: issue_token, revoke_token, revoke_user, grant_access, revoke_access | admin_manage_users: list_users, get_user, inspect |
-| REST API: issue_token, revoke_token/user, list_users, list_revoked, cleanup_revoked | — |
+| admin_manage_users: issue_token, extend_token, revoke_token, revoke_user, grant_access, revoke_access | admin_manage_users: list_users, get_user, inspect |
+| REST API: issue_token, extend_token, revoke_token/user, list_users, list_revoked, cleanup_revoked | — |
 
 ## 响应格式与约定
 
