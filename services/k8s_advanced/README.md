@@ -9,7 +9,7 @@ Kubernetes 进阶服务，拆分为多个 Mixin 模块便于维护。
 | `base.py` | ResourceManager、ResourceConfig、BatchOperationResult、API 版本映射常量 |
 | `resource_conversion.py` | 规格归一化、扁平数据→K8s 格式转换、容器/卷转换 |
 | `batch_ops.py` | 批量 list/create/update/delete/rollout/top 操作 |
-| `backup_restore.py` | 命名空间备份、单资源备份、恢复、列出备份 |
+| `backup_restore.py` | 按 API 资源对象备份与恢复，含自定义资源 |
 | `rbac_advanced.py` | 角色模板、ServiceAccount 权限分析、冲突检查 |
 | `validation.py` | 操作前后资源获取、变化比较、验证与预览 |
 

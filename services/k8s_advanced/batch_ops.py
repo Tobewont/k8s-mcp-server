@@ -2,14 +2,9 @@
 Kubernetes 进阶服务 - 批量操作
 """
 import logging
-import os
-from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-import yaml
-
-from config import BACKUP_RETENTION_DAYS
-from utils.backup_paths import cleanup_expired_backups, get_backup_path
+from utils.resource_yaml import short_error
 
 logger = logging.getLogger(__name__)
 
@@ -259,74 +254,30 @@ class BatchOpsMixin:
         return resource_type
 
     async def auto_backup_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
-        """在变更（更新/删除）前自动备份受影响资源的当前状态。
-
-        遍历 resources 列表，逐个获取当前 K8s 状态并保存到备份目录。
-        单个资源备份失败不阻塞后续操作，仅记录到 backup_failed 列表。
-
-        Returns:
-            {"backed_up": [...], "backup_failed": [...]}
-        """
+        """变更前备份资源原对象。单个失败记入 backup_failed，不继续写操作由调用方决定。"""
         result: Dict[str, list] = {"backed_up": [], "backup_failed": []}
-
         try:
-            cluster_info = await self.k8s_service.get_cluster_info()
-            cluster_name = cluster_info.get("cluster_name", "default")
+            cluster_name = await self._resolve_cluster_name(None)
         except Exception:
             cluster_name = "unknown"
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
         for resource in resources:
             kind = resource.get("kind", "")
-            name = resource.get("metadata", {}).get("name", "unknown")
+            name = (resource.get("metadata") or {}).get("name", "")
             try:
-                try:
-                    resource_type = self._kind_to_resource_type(kind)
-                except ValueError:
-                    resource_type = kind.lower()
-
-                try:
-                    get_func = self._get_resource_operation(resource_type, "get", namespace)
-                    current_state = await get_func(name)
-                except ValueError:
-                    api_version = resource.get("apiVersion") or self._api_version_map.get(kind, "v1")
-                    current_state = await self._dynamic_service.get_resource_async(
-                        api_version, kind, name, namespace
-                    )
-
-                if not current_state:
-                    result["backup_failed"].append({"kind": kind, "name": name, "error": "资源不存在"})
-                    continue
-
-                backup_dir = get_backup_path(
-                    self.backup_dir, cluster_name,
+                backup_file = await self.save_resource_backup(
+                    kind=kind,
+                    name=name,
                     namespace=namespace,
-                    resource_type=resource_type,
-                    resource_name=name,
-                    create_dirs=True,
+                    api_version=resource.get("apiVersion"),
+                    cluster_name=cluster_name,
+                    auto=True,
                 )
-                backup_file = os.path.join(backup_dir, f"{name}_auto_{timestamp}.yaml")
-
-                backup_data = {
-                    "metadata": {
-                        "cluster_name": cluster_name,
-                        "namespace": namespace,
-                        "resource_type": resource_type,
-                        "resource_name": name,
-                        "version": "v1",
-                    },
-                    "resource": current_state,
-                }
-                with open(backup_file, "w", encoding="utf-8") as f:
-                    yaml.dump(backup_data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
-
                 result["backed_up"].append({"kind": kind, "name": name, "backup_file": backup_file})
-            except Exception as e:
-                logger.warning("自动备份 %s/%s 失败: %s", kind, name, e)
-                result["backup_failed"].append({"kind": kind, "name": name, "error": str(e)})
-
-        cleanup_expired_backups(self.backup_dir, BACKUP_RETENTION_DAYS)
+            except Exception as exc:
+                message = short_error(exc)
+                logger.warning("自动备份 %s/%s 失败: %s", kind, name, message)
+                result["backup_failed"].append({"kind": kind, "name": name, "error": message})
         return result
 
     async def batch_create_resources(self, resources: List[Dict], namespace: str = "default") -> Dict:
