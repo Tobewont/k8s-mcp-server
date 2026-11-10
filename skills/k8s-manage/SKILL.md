@@ -183,10 +183,10 @@ mcporter 配置：
 
 | 工具名 | 用途 | 关键参数 |
 |--------|------|----------|
-| `backup_namespace` | 备份整个命名空间 | `namespace`, `include_secrets`, `cluster_name` |
-| `backup_resource` | 备份指定资源 | `kind`, `name`, `namespace`, `cluster_name` |
-| `restore_from_backup` | 从备份恢复 | `backup_path`, `namespace`, `cluster_name` |
-| `list_backups` | 列出备份文件 | `cluster_name`, `namespace` |
+| `backup_namespace` | 备份命名空间中的指定内置资源和自定义资源。Secret 默认包含并保留 data | `namespace`, `include_secrets`(默认 true), `cluster_name` |
+| `backup_resource` | 备份单个资源的原样 YAML。类型名、Kind 或复数名均可；同一 Kind 多个 API 组时传 `api_version` | `resource_type`, `resource_name`, `namespace`, `api_version`, `cluster_name` |
+| `restore_from_backup` | 按备份写回。不存在则创建，已存在则替换。不提交 status 及 uid、resourceVersion、generation、creationTimestamp、managedFields、selfLink、deletionTimestamp、deletionGracePeriodSeconds。指定 `target_namespace` 时必须与 metadata.namespace 一致 | `backup_file`, `target_namespace`, `target_cluster` |
+| `list_backups` | 列出本地备份文件 | `cluster_name`, `namespace` |
 
 ### 认证管理（auth_tools，需启用认证）— 3 个
 
@@ -296,7 +296,6 @@ CallMcpTool(server="k8s-mcp-server", toolName="batch_top_resources", arguments={
 ```
 CallMcpTool(server="k8s-mcp-server", toolName="backup_namespace", arguments={
   "namespace": "production",
-  "include_secrets": false,
   "cluster_name": "my-cluster"
 })
 ```

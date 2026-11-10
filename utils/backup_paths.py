@@ -1,13 +1,15 @@
-"""
-备份路径公共逻辑
-统一 backup_tools 与 backup_restore 的路径构建，含过期清理
-"""
+"""备份目录、备份文件列表和过期清理。"""
 import logging
 import os
+import re
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_BACKUP_SUFFIXES = (".yaml", ".yml")
+_CLEANUP_SUFFIXES = (".yaml", ".yml", ".json")
+_STAMP_RE = re.compile(r"(\d{8}_\d{6})")
 
 _last_cleanup_ts: float = 0.0
 _CLEANUP_INTERVAL: float = 3600.0  # 最多每小时执行一次清理
@@ -73,6 +75,61 @@ def get_backup_search_path(
     return os.path.join(*path_parts)
 
 
+def resolve_backup_file(base_dir: str, backup_file: str) -> str:
+    """把备份路径解析为备份目录内的真实文件路径。"""
+    if not backup_file or not str(backup_file).strip():
+        raise ValueError("backup_file 不能为空")
+    root = os.path.realpath(base_dir)
+    candidate = backup_file if os.path.isabs(backup_file) else os.path.join(base_dir, backup_file)
+    path = os.path.realpath(candidate)
+    try:
+        inside = os.path.commonpath([path, root]) == root
+    except ValueError:
+        inside = False
+    if not inside:
+        raise ValueError("备份路径必须在备份目录下")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"备份文件不存在: {path}")
+    return path
+
+
+def list_backup_files(
+    base_dir: str,
+    cluster_name: Optional[str] = None,
+    namespace: Optional[str] = None,
+) -> List[Dict]:
+    """列出备份目录中的文件。"""
+    backups: List[Dict] = []
+    search_path = get_backup_search_path(base_dir, cluster_name, namespace)
+    if not os.path.exists(search_path):
+        return backups
+    for root, _dirs, files in os.walk(search_path):
+        for file in files:
+            if not file.endswith(_BACKUP_SUFFIXES):
+                continue
+            file_path = os.path.join(root, file)
+            relative_path = os.path.relpath(file_path, base_dir)
+            path_parts = relative_path.split(os.sep)
+            stamps = _STAMP_RE.findall(file)
+            backup_info = {
+                "file_path": file_path,
+                "relative_path": relative_path,
+                "cluster_name": path_parts[0] if path_parts else "unknown",
+                "namespace": None,
+                "resource_type": None,
+                "resource_name": None,
+                "timestamp": stamps[-1] if stamps else "unknown",
+            }
+            if len(path_parts) > 2 and path_parts[1] == "namespaces":
+                backup_info["namespace"] = path_parts[2]
+            if len(path_parts) > 4 and path_parts[3] == "resources":
+                backup_info["resource_type"] = path_parts[4]
+                if len(path_parts) > 5:
+                    backup_info["resource_name"] = path_parts[5]
+            backups.append(backup_info)
+    return sorted(backups, key=lambda item: item["timestamp"] if item["timestamp"] != "unknown" else "", reverse=True)
+
+
 def cleanup_expired_backups(base_dir: str, retention_days: int) -> int:
     """删除超过保留期限的备份文件，并清理残留空目录。
 
@@ -103,7 +160,7 @@ def cleanup_expired_backups(base_dir: str, retention_days: int) -> int:
 
     for root, _dirs, files in os.walk(base_dir, topdown=False):
         for fname in files:
-            if not (fname.endswith(".yaml") or fname.endswith(".json")):
+            if not fname.endswith(_CLEANUP_SUFFIXES):
                 continue
             fpath = os.path.join(root, fname)
             try:

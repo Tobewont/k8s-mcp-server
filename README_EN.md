@@ -176,16 +176,16 @@ xcopy /E /I skills\k8s-manage %USERPROFILE%\.cursor\skills\k8s-manage
 
 ### Backup & Restore (backup_tools.py)
 
-- `backup_namespace()` — Back up an entire namespace (optional secrets)
-- `backup_resource()` — Back up a specific resource
-- `restore_from_backup()` — Restore from backup file
-- `list_backups()` — List backup files (filterable by cluster/namespace)
+- `backup_namespace()` — Back up selected built-in resources and custom resources in a namespace
+- `backup_resource()` — Back up one resource by type, kind, or plural name
+- `restore_from_backup()` — Create a missing resource or replace an existing one from the backup
+- `list_backups()` — List local backup files
 
-#### Automatic backup (safety net for mutations)
+#### Automatic backup
 
-`batch_update_resources` and `batch_delete_resources` **automatically** snapshot affected resources before applying changes. The backup path is returned in the tool response under the `auto_backup` field and can be passed directly to `restore_from_backup` for rollback. No user action required.
+`batch_update_resources` and `batch_delete_resources` save the API object YAML before the change. If any backup fails, the write is aborted. The path is returned in `auto_backup` and can be passed to `restore_from_backup`.
 
-- Format: YAML (consistent with namespace/resource backups)
+- The file is the API object YAML. Secret `data` is kept. Restore does not send `status`, `uid`, `resourceVersion`, `generation`, `creationTimestamp`, `managedFields`, `selfLink`, `deletionTimestamp`, or `deletionGracePeriodSeconds`
 - Path: `data/backup/<cluster>/namespaces/<ns>/resources/<type>/<name>/<name>_auto_<timestamp>.yaml`
 - **Retention**: controlled by `MCP_BACKUP_RETENTION_DAYS` (default 90 days, based on file mtime). Expired files are cleaned up automatically on subsequent backup operations; set to `0` to disable cleanup.
 

@@ -402,18 +402,18 @@ k8s-mcp-server/
 
 ### 备份和恢复工具 (backup_tools.py)
 
-- `backup_namespace()` - 备份整个命名空间
-- `backup_resource()` - 备份特定资源
-- `restore_from_backup()` - 从备份恢复资源
-- `list_backups()` - 列出备份文件
+- `backup_namespace()` - 备份命名空间中的指定内置资源和自定义资源
+- `backup_resource()` - 备份单个资源，类型名、Kind 或复数名均可
+- `restore_from_backup()` - 按备份写回。不存在则创建，已存在则替换
+- `list_backups()` - 列出本地备份文件
 
 
 
-#### 自动备份（变更前安全网）
+#### 自动备份
 
-`batch_update_resources` 与 `batch_delete_resources` 在执行变更前会**自动**备份受影响资源的当前状态，备份路径会随工具响应一同返回（`auto_backup` 字段），可直接用于 `restore_from_backup` 回滚。无需用户手动触发。
+`batch_update_resources` 与 `batch_delete_resources` 在变更前备份受影响资源的原样 YAML。任一资源备份失败则中止写操作。路径在响应的 `auto_backup` 中，可传给 `restore_from_backup`。
 
-- 文件格式：YAML，与命名空间/资源备份保持一致
+- 文件内容为 API 返回的资源 YAML，Secret 保留 `data`。恢复时不提交 `status`，以及 `uid`、`resourceVersion`、`generation`、`creationTimestamp`、`managedFields`、`selfLink`、`deletionTimestamp`、`deletionGracePeriodSeconds`
 - 路径：`data/backup/<cluster>/namespaces/<ns>/resources/<type>/<name>/<name>_auto_<timestamp>.yaml`
 - **保留期**：通过 `MCP_BACKUP_RETENTION_DAYS` 配置（默认 90 天，按文件 mtime 计算），超期后在后续备份操作时自动清理；设为 `0` 可关闭清理
 

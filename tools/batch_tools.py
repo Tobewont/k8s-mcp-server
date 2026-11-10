@@ -93,7 +93,7 @@ async def batch_create_resources(resources: str, namespace: str = "default",
 async def batch_update_resources(resources: str, namespace: str = "default",
                                 kubeconfig_path: Optional[str] = None,
                                 cluster_name: Optional[str] = None) -> str:
-    """批量更新资源
+    """批量更新资源。变更前备份资源原样 YAML，备份失败则中止写操作。
     
     Args:
         resources: JSON格式的资源列表
@@ -109,6 +109,9 @@ async def batch_update_resources(resources: str, namespace: str = "default",
     service = get_k8s_advanced_service(effective_path)
 
     auto_backup = await service.auto_backup_resources(resources_list, namespace)
+    if auto_backup.get("backup_failed"):
+        log_operation("batch_update_resources", "update", {"namespace": namespace, "auto_backup": auto_backup}, False)
+        return json_error("变更前备份未完成，已中止写操作", auto_backup=auto_backup)
     result = await service.batch_update_resources(resources_list, namespace)
     result["auto_backup"] = auto_backup
 
@@ -129,7 +132,7 @@ async def batch_delete_resources(resources: str, namespace: str = "default",
                                grace_period_seconds: Optional[int] = None,
                                kubeconfig_path: Optional[str] = None,
                                cluster_name: Optional[str] = None) -> str:
-    """批量删除资源
+    """批量删除资源。删除前备份资源原样 YAML，备份失败则中止写操作。
     
     Args:
         resources: JSON格式的资源列表
@@ -146,6 +149,9 @@ async def batch_delete_resources(resources: str, namespace: str = "default",
     service = get_k8s_advanced_service(effective_path)
 
     auto_backup = await service.auto_backup_resources(resources_list, namespace)
+    if auto_backup.get("backup_failed"):
+        log_operation("batch_delete_resources", "delete", {"namespace": namespace, "auto_backup": auto_backup}, False)
+        return json_error("变更前备份未完成，已中止写操作", auto_backup=auto_backup)
     result = await service.batch_delete_resources(resources_list, namespace, grace_period_seconds)
     result["auto_backup"] = auto_backup
 

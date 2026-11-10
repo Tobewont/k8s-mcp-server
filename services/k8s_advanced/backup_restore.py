@@ -1,397 +1,402 @@
 """
-Kubernetes 进阶服务 - 备份与恢复
+按接口返回的资源对象做备份与恢复。
 """
-import json
 import logging
 import os
-import yaml
+import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from config import BACKUP_RETENTION_DAYS
-from utils.backup_paths import cleanup_expired_backups, get_backup_path, get_backup_search_path
+from services.k8s_advanced.base import RESOURCE_TYPE_TO_KIND
+from services.k8s_constants import API_VERSION_MAP, RESOURCE_TYPE_SINGULAR_TO_KIND
+from utils.backup_paths import cleanup_expired_backups, get_backup_path, list_backup_files, resolve_backup_file
+from utils.resource_yaml import dumps_manifests, loads_manifests, short_error
 
 logger = logging.getLogger(__name__)
 
-# 资源类型（支持单复数）-> (Kind, create_method_name)
-_RESOURCE_CREATE_SPECS: Dict[str, Tuple[str, str]] = {
-    "deployment": ("Deployment", "create_deployment"),
-    "deployments": ("Deployment", "create_deployment"),
-    "statefulset": ("StatefulSet", "create_statefulset"),
-    "statefulsets": ("StatefulSet", "create_statefulset"),
-    "daemonset": ("DaemonSet", "create_daemonset"),
-    "daemonsets": ("DaemonSet", "create_daemonset"),
-    "service": ("Service", "create_service"),
-    "services": ("Service", "create_service"),
-    "configmap": ("ConfigMap", "create_configmap"),
-    "configmaps": ("ConfigMap", "create_configmap"),
-    "secret": ("Secret", "create_secret"),
-    "secrets": ("Secret", "create_secret"),
-    "job": ("Job", "create_job"),
-    "jobs": ("Job", "create_job"),
-    "cronjob": ("CronJob", "create_cronjob"),
-    "cronjobs": ("CronJob", "create_cronjob"),
-    "ingress": ("Ingress", "create_ingress"),
-    "ingresses": ("Ingress", "create_ingress"),
-    "persistentvolumeclaim": ("PersistentVolumeClaim", "create_persistentvolumeclaim"),
-    "persistentvolumeclaims": ("PersistentVolumeClaim", "create_persistentvolumeclaim"),
-    "serviceaccount": ("ServiceAccount", "create_serviceaccount"),
-    "serviceaccounts": ("ServiceAccount", "create_serviceaccount"),
-    "role": ("Role", "create_role"),
-    "roles": ("Role", "create_role"),
-    "rolebinding": ("RoleBinding", "create_role_binding"),
-    "rolebindings": ("RoleBinding", "create_role_binding"),
+_KIND_TO_PLURAL = {kind: plural for plural, kind in RESOURCE_TYPE_TO_KIND.items()}
+
+_SHORT_ALIASES = {
+    "deploy": "deployment",
+    "sts": "statefulset",
+    "ds": "daemonset",
+    "svc": "service",
+    "cm": "configmap",
+    "sa": "serviceaccount",
+    "pvc": "persistentvolumeclaim",
+    "pv": "persistentvolume",
+    "ns": "namespace",
+    "hpa": "horizontalpodautoscaler",
+    "np": "networkpolicy",
+    "quota": "resourcequota",
+}
+
+_NAMESPACE_TYPES = (
+    "serviceaccounts",
+    "configmaps",
+    "secrets",
+    "persistentvolumeclaims",
+    "roles",
+    "rolebindings",
+    "services",
+    "ingresses",
+    "deployments",
+    "statefulsets",
+    "daemonsets",
+    "jobs",
+    "cronjobs",
+)
+
+# 命名空间备份不扫描这些组，以及以 .k8s.io 结尾的组。
+_BUILTIN_API_GROUPS = {
+    "",
+    "apps",
+    "autoscaling",
+    "batch",
+    "extensions",
+    "policy",
 }
 
 
-class BackupRestoreMixin:
-    """备份与恢复 Mixin"""
+def _api_group(group_version: str) -> str:
+    if "/" not in (group_version or ""):
+        return ""
+    return group_version.rsplit("/", 1)[0]
 
-    async def _backup_resource_type(self, resource_type: str, namespace: str) -> List[Dict]:
-        """统一的资源类型备份方法"""
+
+def _is_custom_resource(group_version: str) -> bool:
+    group = _api_group(group_version)
+    if not group or group in _BUILTIN_API_GROUPS or group.endswith(".k8s.io"):
+        return False
+    return True
+
+
+def _version_rank(group_version: str):
+    version = group_version.rsplit("/", 1)[-1].lower()
+    prerelease = 1 if ("alpha" in version or "beta" in version) else 0
+    return prerelease, version
+
+
+def _prefer_resource(candidate: Dict, current: Dict) -> bool:
+    """同一 Kind 的多个版本里，优先 preferred，其次稳定版本中较新的一个。"""
+    if bool(candidate.get("preferred")) != bool(current.get("preferred")):
+        return bool(candidate.get("preferred"))
+    candidate_rank = _version_rank(candidate.get("group_version") or "")
+    current_rank = _version_rank(current.get("group_version") or "")
+    if candidate_rank[0] != current_rank[0]:
+        return candidate_rank[0] < current_rank[0]
+    return candidate_rank[1] > current_rank[1]
+
+
+def resolve_resource(resource_type: str, api_version: Optional[str] = None):
+    """解析资源类型，返回 (复数类型, Kind, apiVersion)。"""
+    raw = (resource_type or "").strip()
+    if not raw:
+        raise ValueError("资源类型不能为空")
+    key = _SHORT_ALIASES.get(raw.lower(), raw.lower())
+    kind = RESOURCE_TYPE_SINGULAR_TO_KIND.get(key)
+    if kind is None and raw in API_VERSION_MAP:
+        kind = raw
+    if kind is None:
+        kind = RESOURCE_TYPE_TO_KIND.get(key)
+    if kind is None:
+        if api_version:
+            return key, raw, api_version
+        raise ValueError(f"不支持的资源类型: {resource_type}")
+    version = api_version or API_VERSION_MAP.get(kind)
+    if not version:
+        raise ValueError(f"不支持的资源类型: {resource_type}")
+    plural = _KIND_TO_PLURAL.get(kind, kind.lower())
+    return plural, kind, version
+
+
+def _path_segment(value: str, label: str) -> str:
+    if (
+        not value
+        or value in (".", "..")
+        or any(ch in value for ch in ("/", "\\", "\x00"))
+    ):
+        raise ValueError(f"非法的{label}")
+    return value
+
+
+def _is_generated(kind: str, name: str) -> bool:
+    if kind == "ConfigMap" and name == "kube-root-ca.crt":
+        return True
+    if kind == "ServiceAccount" and name == "default":
+        return True
+    if kind == "Secret" and name.startswith("default-token-"):
+        return True
+    return False
+
+
+def _atomic_write(path: str, text: str) -> None:
+    directory = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".yaml", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception:
         try:
-            config = self.resource_manager.get_resource_config(resource_type)
-            if not config:
-                return []
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
-            resources = []
-            list_method = self.resource_manager.get_operation_method(resource_type, "list", namespace)
-            get_method = self.resource_manager.get_operation_method(resource_type, "get", namespace)
-            listed = await list_method()
 
-            for r in listed:
-                resource_name = r.get("name")
-                if not resource_name:
-                    continue
-                if config.skip_condition and config.skip_condition(resource_name):
-                    continue
-                try:
-                    resource_data = await get_method(resource_name)
-                    if not resource_data or resource_data == {}:
-                        continue
-                    k8s_resource = self._convert_flat_to_k8s_format(resource_data, config.kind)
-                    processed_resource = self._sanitize_for_backup(k8s_resource)
-                    resources.append(processed_resource)
-                except Exception as e:
-                    logger.warning("获取 %s %s 失败: %s", config.kind, resource_name, e)
-                    continue
-        except Exception as e:
-            logger.warning("备份 %s 失败: %s", resource_type, e)
-            return []
-        return resources
+def _allocate_path(directory: str, filename: str) -> str:
+    path = os.path.join(directory, filename)
+    if not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(filename)
+    for index in range(1, 1000):
+        candidate = os.path.join(directory, f"{stem}_{index}{ext}")
+        if not os.path.exists(candidate):
+            return candidate
+    raise RuntimeError("无法分配备份文件名")
 
-    def _get_backup_path(self, cluster_name: str, namespace: Optional[str] = None,
-                         resource_type: Optional[str] = None, resource_name: Optional[str] = None) -> str:
-        """获取备份文件路径"""
-        return get_backup_path(
-            self.backup_dir, cluster_name,
-            namespace=namespace,
-            resource_type=resource_type,
+
+class BackupRestoreMixin:
+    """备份与恢复。"""
+
+    async def _resolve_backup_target(self, resource_type: str, api_version: Optional[str] = None):
+        """返回 (复数名, Kind, apiVersion)。未登记的类型按集群 API 发现结果匹配。"""
+        fallback = None
+        try:
+            plural, kind, version = resolve_resource(resource_type, api_version)
+        except ValueError:
+            plural = kind = version = None
+        else:
+            if kind in API_VERSION_MAP or kind in _KIND_TO_PLURAL:
+                return plural, kind, version
+            fallback = (plural, kind, version)
+
+        aliased = _SHORT_ALIASES.get((resource_type or "").strip().lower(), (resource_type or "").strip())
+        try:
+            discovered = await self._dynamic_service.list_available_resources_async()
+        except Exception:
+            if fallback and fallback[1] != fallback[0]:
+                return fallback
+            raise
+        matches = []
+        for item in discovered:
+            name = item.get("name") or ""
+            if "/" in name:
+                continue
+            item_kind = item.get("kind") or ""
+            if name.lower() == aliased.lower() or item_kind.lower() in {aliased.lower(), (resource_type or "").strip().lower()}:
+                matches.append(item)
+        if api_version:
+            exact = [item for item in matches if (item.get("group_version") or "") == api_version]
+            if exact:
+                matches = exact
+            elif matches:
+                raise ValueError(f"资源类型 {resource_type} 在 {api_version} 中不存在")
+            elif fallback and fallback[1] != fallback[0]:
+                return fallback
+            else:
+                matches = []
+        by_name = [item for item in matches if (item.get("name") or "").lower() == aliased.lower()]
+        pool = by_name or matches
+        chosen: Dict[tuple, Dict] = {}
+        for item in pool:
+            key = (_api_group(item.get("group_version") or ""), item.get("kind"))
+            current = chosen.get(key)
+            if current is None or _prefer_resource(item, current):
+                chosen[key] = item
+        if len(chosen) == 1:
+            item = next(iter(chosen.values()))
+            plural_name = item.get("name") or (item.get("kind") or "resource").lower()
+            return plural_name, item.get("kind"), item.get("group_version")
+        if not chosen:
+            if fallback and fallback[1] != fallback[0]:
+                return fallback
+            raise ValueError(f"不支持的资源类型: {resource_type}")
+        versions = ", ".join(
+            sorted(f"{item.get('group_version')}/{item.get('kind')}" for item in chosen.values())
+        )
+        raise ValueError(f"资源类型 {resource_type} 对应多个 API（{versions}），请指定 api_version")
+
+    async def _resolve_cluster_name(self, cluster_name: Optional[str]) -> str:
+        if cluster_name:
+            return _path_segment(cluster_name, "集群名称")
+        info = await self.k8s_service.get_cluster_info()
+        resolved = info.get("cluster_name") or "default"
+        return _path_segment(resolved, "集群名称")
+
+    def _write_manifests(self, directory: str, filename: str, manifests: List[Dict]) -> str:
+        os.makedirs(directory, exist_ok=True)
+        text = dumps_manifests(manifests)
+        path = _allocate_path(directory, filename)
+        _atomic_write(path, text)
+        cleanup_expired_backups(self.backup_dir, BACKUP_RETENTION_DAYS)
+        return path
+
+    async def save_resource_backup(
+        self,
+        kind: str,
+        name: str,
+        namespace: str,
+        api_version: Optional[str] = None,
+        cluster_name: Optional[str] = None,
+        auto: bool = False,
+    ) -> str:
+        """读取资源原对象并写入备份文件。"""
+        plural, resolved_kind, resolved_version = await self._resolve_backup_target(kind, api_version)
+        resource_name = _path_segment(name, "资源名称")
+        ns = _path_segment(namespace, "命名空间") if namespace else namespace
+        cluster = await self._resolve_cluster_name(cluster_name)
+        manifest = await self._dynamic_service.get_manifest_async(
+            resolved_version, resolved_kind, resource_name, ns
+        )
+        directory = get_backup_path(
+            self.backup_dir,
+            cluster,
+            namespace=ns,
+            resource_type=_path_segment(plural, "资源类型"),
             resource_name=resource_name,
             create_dirs=True,
         )
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        marker = "_auto_" if auto else "_"
+        filename = f"{resource_name}{marker}{stamp}.yaml"
+        return self._write_manifests(directory, filename, [manifest])
 
-    async def backup_namespace(self, namespace: str, cluster_name: Optional[str] = None, include_secrets: bool = True) -> str:
-        """备份整个命名空间的资源"""
-        if not cluster_name:
-            cluster_info = await self.k8s_service.get_cluster_info()
-            cluster_name = cluster_info.get("cluster_name", "default")
-
-        backup_data = {
-            "metadata": {"cluster_name": cluster_name, "namespace": namespace, "version": "v1"},
-            "namespace": None,
-            "resources": {}
-        }
+    async def backup_namespace(
+        self,
+        namespace: str,
+        cluster_name: Optional[str] = None,
+        include_secrets: bool = True,
+    ) -> Dict:
+        """备份命名空间中的指定内置资源和自定义资源。已注册类型读取失败时不写文件。"""
+        ns = _path_segment(namespace, "命名空间")
+        cluster = await self._resolve_cluster_name(cluster_name)
+        manifests: List[Dict] = []
+        skipped: List[Dict] = []
+        errors: List[str] = []
 
         try:
-            ns_info = await self.k8s_service.get_namespace(namespace)
-            namespace_resource = {
-                "apiVersion": "v1",
-                "kind": "Namespace",
-                "metadata": {
-                    "name": ns_info.get("name"),
-                    "labels": ns_info.get("labels", {}),
-                    "annotations": ns_info.get("annotations", {})
-                }
-            }
-            backup_data["namespace"] = self._sanitize_for_backup(namespace_resource)
-        except Exception as e:
-            logger.warning("备份命名空间元数据 %s 失败（可能权限不足）: %s", namespace, e)
+            namespace_manifest = await self._dynamic_service.get_manifest_async("v1", "Namespace", ns, None)
+            manifests.append(namespace_manifest)
+        except Exception as exc:
+            skipped.append({"resource_type": "namespaces", "reason": short_error(exc)})
 
-        resource_types = [
-            "deployments", "statefulsets", "daemonsets",
-            "services", "configmaps", "jobs", "cronjobs", "ingresses",
-            "persistentvolumeclaims", "serviceaccounts", "roles", "rolebindings"
-        ]
-        if include_secrets:
-            resource_types.append("secrets")
-
+        resource_types = [item for item in _NAMESPACE_TYPES if include_secrets or item != "secrets"]
         for resource_type in resource_types:
             try:
-                resources = await self._backup_resource_type(resource_type, namespace)
-                backup_data["resources"][resource_type] = resources
-            except Exception as e:
-                logger.warning("备份 %s 失败: %s", resource_type, e)
-                backup_data["resources"][resource_type] = {"error": str(e)}
-
-        backup_path = self._get_backup_path(cluster_name, namespace)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = os.path.join(backup_path, f"namespace_backup_{timestamp}.yaml")
-
-        class CustomYamlDumper(yaml.SafeDumper):
-            def ignore_aliases(self, data):
-                return True
-
-            def represent_str(self, data):
-                if '\n' in data:
-                    return self.represent_scalar('tag:yaml.org,2002:str', data, style='|')
-                return self.represent_scalar('tag:yaml.org,2002:str', data)
-
-        CustomYamlDumper.add_representer(str, CustomYamlDumper.represent_str)
-        with open(backup_file, 'w', encoding='utf-8') as f:
-            yaml.dump(backup_data, f, sort_keys=False, allow_unicode=True, Dumper=CustomYamlDumper, default_flow_style=False)
-
-        cleanup_expired_backups(self.backup_dir, BACKUP_RETENTION_DAYS)
-        return backup_file
-
-    async def backup_specific_resource(self, resource_type: str, resource_name: str,
-                                       namespace: str, cluster_name: Optional[str] = None) -> str:
-        """备份特定资源"""
-        if not cluster_name:
-            cluster_info = await self.k8s_service.get_cluster_info()
-            cluster_name = cluster_info.get("cluster_name", "default")
-
-        _GET_METHOD_MAP = {
-            "deployment": "get_deployment",
-            "statefulset": "get_statefulset",
-            "daemonset": "get_daemonset",
-            "service": "get_service",
-            "configmap": "get_configmap",
-            "secret": "get_secret",
-            "job": "get_job",
-            "cronjob": "get_cronjob",
-            "ingress": "get_ingress",
-            "persistentvolumeclaim": "get_persistentvolumeclaim",
-            "serviceaccount": "get_serviceaccount",
-            "role": "get_role",
-            "rolebinding": "get_role_binding",
-        }
-        try:
-            get_method = _GET_METHOD_MAP.get(resource_type)
-            if not get_method:
-                raise ValueError(f"不支持的资源类型: {resource_type}")
-            method = getattr(self.k8s_service, get_method)
-            resource_data = await method(resource_name, namespace)
-
-            backup_data = {
-                "metadata": {
-                    "cluster_name": cluster_name,
-                    "namespace": namespace,
-                    "resource_type": resource_type,
-                    "resource_name": resource_name,
-                    "version": "v1"
-                },
-                "resource": resource_data
-            }
-            backup_path = self._get_backup_path(cluster_name, namespace, resource_type, resource_name)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = os.path.join(backup_path, f"{resource_name}_{timestamp}.yaml")
-            with open(backup_file, 'w', encoding='utf-8') as f:
-                yaml.dump(backup_data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
-
-            cleanup_expired_backups(self.backup_dir, BACKUP_RETENTION_DAYS)
-            return backup_file
-        except Exception as e:
-            raise Exception(f"备份资源失败: {e}")
-
-    async def restore_from_backup(self, backup_file: str, target_namespace: Optional[str] = None,
-                                 target_cluster: Optional[str] = None) -> Dict:
-        """从备份文件恢复资源"""
-        if not os.path.exists(backup_file):
-            raise FileNotFoundError(f"备份文件不存在: {backup_file}")
-
-        with open(backup_file, 'r', encoding='utf-8') as f:
-            backup_data = yaml.safe_load(f)
-
-        metadata = backup_data["metadata"]
-        original_namespace = metadata["namespace"]
-        original_cluster = metadata["cluster_name"]
-
-        if target_namespace and target_namespace != original_namespace:
-            raise ValueError(f"不允许恢复到不同的命名空间。原命名空间: {original_namespace}, 目标命名空间: {target_namespace}")
-
-        target_namespace = original_namespace
-        target_cluster = target_cluster or original_cluster
-        results = {"success": [], "failed": [], "total": 0}
-
-        if "namespace" in backup_data:
-            try:
-                namespace_resource = backup_data["namespace"]
-                await self.k8s_service.create_namespace(resource=namespace_resource)
-                results["success"].append(f"namespace/{original_namespace}")
-                results["total"] += 1
-                logger.info("成功恢复命名空间: %s", original_namespace)
-            except Exception as e:
-                err_str = str(e).lower()
-                if "already exists" in err_str or "conflict" in err_str:
-                    logger.info("命名空间 %s 已存在，跳过创建", original_namespace)
-                elif "forbidden" in err_str:
-                    logger.warning("无权创建命名空间 %s（需集群级 namespaces create），跳过", original_namespace)
-                else:
-                    results["failed"].append({"resource": f"namespace/{original_namespace}", "error": str(e)})
-                    logger.warning("恢复命名空间失败: %s", e)
-        else:
-            try:
-                await self.k8s_service.create_namespace(name=target_namespace)
-            except Exception:
-                pass
-
-        if "resources" in backup_data:
-            for resource_type, resources in backup_data["resources"].items():
-                if isinstance(resources, dict) and "error" in resources:
-                    results["failed"].append({"resource_type": resource_type, "error": resources["error"]})
+                _plural, kind, api_version = resolve_resource(resource_type)
+                items = await self._dynamic_service.list_manifests_async(api_version, kind, ns)
+            except ValueError as exc:
+                skipped.append({"resource_type": resource_type, "reason": short_error(exc)})
+                continue
+            except Exception as exc:
+                errors.append(f"{resource_type}: {short_error(exc)}")
+                continue
+            for item in items:
+                item_name = item.get("metadata", {}).get("name", "")
+                if _is_generated(item.get("kind", kind), item_name):
                     continue
-                valid_resources = []
-                for resource in resources:
-                    if not resource or resource == {}:
-                        continue
-                    resource_name = resource.get("metadata", {}).get("name", "")
-                    if not resource_name or resource_name in ["kube-root-ca.crt"] or resource_name.startswith("default-token-"):
-                        continue
-                    valid_resources.append(resource)
+                manifests.append(item)
 
-                for resource in valid_resources:
-                    try:
-                        if "metadata" in resource:
-                            current_ns = resource["metadata"].get("namespace")
-                            if current_ns and current_ns != target_namespace:
-                                logger.warning("资源 %s 的命名空间 %s 与目标命名空间 %s 不匹配",
-                                               resource.get('metadata', {}).get('name'), current_ns, target_namespace)
-                            resource["metadata"]["namespace"] = target_namespace
-
-                        if resource_type in _RESOURCE_CREATE_SPECS:
-                            kind, method_name = _RESOURCE_CREATE_SPECS[resource_type]
-                            create_func = getattr(self.k8s_service, method_name)
-                            await create_func(resource=self._convert_to_k8s_resource(resource, kind), namespace=target_namespace)
-                        results["success"].append(f"{resource_type}/{resource['metadata']['name']}")
-                        results["total"] += 1
-                    except Exception as e:
-                        results["failed"].append({
-                            "resource": f"{resource_type}/{resource.get('metadata', {}).get('name', 'unknown')}",
-                            "error": str(e)
-                        })
-
-        elif "resource" in backup_data:
-            resource = backup_data["resource"]
-            resource_type = metadata["resource_type"]
+        try:
+            discovered = await self._dynamic_service.list_available_resources_async()
+        except Exception as exc:
+            errors.append(f"customresources: {short_error(exc)}")
+            discovered = []
+        custom_by_kind: Dict[tuple, Dict] = {}
+        for item in discovered:
+            name = item.get("name") or ""
+            if not item.get("namespaced") or "/" in name or not _is_custom_resource(item.get("group_version") or ""):
+                continue
+            key = (_api_group(item.get("group_version") or ""), item.get("kind"))
+            current = custom_by_kind.get(key)
+            if current is None or _prefer_resource(item, current):
+                custom_by_kind[key] = item
+        for item in custom_by_kind.values():
+            resource_type = item.get("name") or item.get("kind")
             try:
-                if "metadata" in resource:
-                    resource["metadata"]["namespace"] = target_namespace
-                if resource_type in _RESOURCE_CREATE_SPECS:
-                    kind, method_name = _RESOURCE_CREATE_SPECS[resource_type]
-                    create_func = getattr(self.k8s_service, method_name)
-                    await create_func(resource=self._convert_to_k8s_resource(resource, kind), namespace=target_namespace)
-                results["success"].append(f"{resource_type}/{resource['metadata']['name']}")
-                results["total"] += 1
-            except Exception as e:
-                results["failed"].append({
-                    "resource": f"{resource_type}/{resource.get('metadata', {}).get('name', 'unknown')}",
-                    "error": str(e)
-                })
+                objects = await self._dynamic_service.list_manifests_async(
+                    item.get("group_version"), item.get("kind"), ns
+                )
+            except ValueError as exc:
+                skipped.append({"resource_type": resource_type, "reason": short_error(exc)})
+                continue
+            except Exception as exc:
+                errors.append(f"{resource_type}: {short_error(exc)}")
+                continue
+            manifests.extend(objects)
+
+        if errors:
+            raise RuntimeError("备份未完成: " + "; ".join(errors))
+        if not manifests:
+            raise RuntimeError("没有可备份的资源")
+
+        directory = get_backup_path(self.backup_dir, cluster, namespace=ns, create_dirs=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = self._write_manifests(directory, f"namespace_backup_{stamp}.yaml", manifests)
+        logger.info("命名空间 %s 备份完成: %s (%d)", ns, backup_file, len(manifests))
+        return {
+            "backup_file": backup_file,
+            "resource_count": len(manifests),
+            "skipped": skipped,
+        }
+
+    async def backup_specific_resource(
+        self,
+        resource_type: str,
+        resource_name: str,
+        namespace: str,
+        cluster_name: Optional[str] = None,
+        api_version: Optional[str] = None,
+    ) -> str:
+        """备份指定资源的原对象。resource_type 可以是类型名、Kind 或复数名。"""
+        try:
+            return await self.save_resource_backup(
+                kind=resource_type,
+                name=resource_name,
+                namespace=namespace,
+                api_version=api_version,
+                cluster_name=cluster_name,
+                auto=False,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"备份资源失败: {short_error(exc)}") from None
+
+    def _backup_file_in_dir(self, backup_file: str) -> str:
+        return resolve_backup_file(self.backup_dir, backup_file)
+
+    async def restore_from_backup(self, backup_file: str, target_namespace: Optional[str] = None) -> Dict:
+        """按备份写回资源。不存在则创建，已存在则替换。"""
+        path = self._backup_file_in_dir(backup_file)
+        with open(path, "r", encoding="utf-8") as handle:
+            manifests = loads_manifests(handle.read())
+
+        if target_namespace:
+            for manifest in manifests:
+                namespace = (manifest.get("metadata") or {}).get("namespace")
+                if namespace and namespace != target_namespace:
+                    raise ValueError(
+                        f"不允许恢复到不同的命名空间。原命名空间: {namespace}, 目标命名空间: {target_namespace}"
+                    )
+
+        results = {"restored": [], "failed": [], "total": 0}
+        for manifest in manifests:
+            kind = manifest.get("kind", "")
+            name = (manifest.get("metadata") or {}).get("name", "")
+            results["total"] += 1
+            try:
+                action = await self._dynamic_service.apply_manifest_async(manifest)
+                results["restored"].append(f"{action} {kind}/{name}")
+            except Exception as exc:
+                message = short_error(exc)
+                logger.warning("恢复 %s/%s 失败: %s", kind, name, message)
+                results["failed"].append({"resource": f"{kind}/{name}", "error": message})
         return results
 
-    def _convert_to_k8s_resource(self, resource_data: Dict, kind: str) -> Dict:
-        """将备份的资源数据转换为标准的 Kubernetes 资源定义"""
-        k8s_resource = self._create_base_k8s_resource(resource_data, kind, from_backup=True)
-        k8s_resource = self._populate_resource_content(k8s_resource, resource_data, kind, from_backup=True)
-        if "metadata" in k8s_resource:
-            metadata = k8s_resource["metadata"]
-            for field in ["uid", "resourceVersion", "generation", "creationTimestamp", "created", "managedFields"]:
-                metadata.pop(field, None)
-        return k8s_resource
-
-    def _sanitize_for_backup(self, resource_obj: Dict) -> Dict:
-        """按照 K8s YAML 标准严格过滤字段，仅保留声明式配置"""
-        if not isinstance(resource_obj, dict):
-            return resource_obj
-
-        resource = json.loads(json.dumps(resource_obj))
-        allowed_top_fields = {"apiVersion", "kind", "metadata", "spec", "data", "binaryData", "type", "rules", "roleRef", "subjects"}
-        keys_to_remove = [k for k in list(resource.keys()) if k not in allowed_top_fields]
-        for k in keys_to_remove:
-            resource.pop(k, None)
-
-        metadata = resource.get("metadata", {})
-        if metadata:
-            allowed_meta_fields = {"name", "namespace", "labels", "annotations"}
-            meta_keys_to_remove = [k for k in list(metadata.keys()) if k not in allowed_meta_fields]
-            for k in meta_keys_to_remove:
-                metadata.pop(k, None)
-            resource["metadata"] = metadata
-
-        resource.pop("status", None)
-
-        if resource.get("spec", {}).get("template", {}).get("spec", {}).get("volumes"):
-            volumes = resource["spec"]["template"]["spec"]["volumes"]
-            for volume in volumes:
-                volume.pop("type", None)
-
-        if resource.get("kind") in ["Job", "CronJob"]:
-            template_metadata = None
-            if resource.get("kind") == "Job":
-                template_metadata = resource.get("spec", {}).get("template", {}).get("metadata", {})
-            elif resource.get("kind") == "CronJob":
-                template_metadata = resource.get("spec", {}).get("jobTemplate", {}).get("spec", {}).get("template", {}).get("metadata", {})
-            if template_metadata:
-                runtime_labels = ["batch.kubernetes.io/controller-uid", "batch.kubernetes.io/job-name", "controller-uid", "job-name"]
-                for label in runtime_labels:
-                    template_metadata.get("labels", {}).pop(label, None)
-
-        spec = resource.get("spec")
-        if spec is not None and isinstance(spec, dict):
-            resource["spec"] = self._normalize_spec(resource.get("kind"), spec, for_backup=True)
-            if not resource["spec"]:
-                resource.pop("spec", None)
-
-        if not resource.get("metadata"):
-            logger.warning("资源缺少 metadata: %s", resource)
-        spec_required_kinds = ["Deployment", "StatefulSet", "DaemonSet", "Service", "Job", "CronJob", "Ingress", "PersistentVolumeClaim"]
-        if resource.get("kind") in spec_required_kinds and not resource.get("spec"):
-            logger.warning("%s 缺少 spec: %s", resource.get('kind'), resource)
-        if resource.get("kind") == "Role" and not resource.get("rules"):
-            logger.warning("Role 缺少 rules: %s", resource)
-        if resource.get("kind") == "RoleBinding" and (not resource.get("subjects") or not resource.get("roleRef")):
-            logger.warning("RoleBinding 缺少 subjects 或 roleRef: %s", resource)
-        return resource
-
     def list_backups(self, cluster_name: Optional[str] = None, namespace: Optional[str] = None) -> List[Dict]:
-        """列出备份文件"""
-        backups = []
-        search_path = get_backup_search_path(self.backup_dir, cluster_name, namespace)
-
-        if not os.path.exists(search_path):
-            return backups
-
-        for root, dirs, files in os.walk(search_path):
-            for file in files:
-                if file.endswith('.json') or file.endswith('.yaml'):
-                    file_path = os.path.join(root, file)
-                    relative_path = os.path.relpath(file_path, self.backup_dir)
-                    path_parts = relative_path.split(os.sep)
-                    backup_info = {
-                        "file_path": file_path,
-                        "relative_path": relative_path,
-                        "cluster_name": path_parts[0] if len(path_parts) > 0 else "unknown",
-                        "namespace": None,
-                        "resource_type": None,
-                        "resource_name": None,
-                        "timestamp": file.split('_')[-1].replace('.json', '').replace('.yaml', '') if '_' in file else "unknown"
-                    }
-                    if len(path_parts) > 2 and path_parts[1] == "namespaces":
-                        backup_info["namespace"] = path_parts[2]
-                    if len(path_parts) > 4 and path_parts[3] == "resources":
-                        backup_info["resource_type"] = path_parts[4]
-                        if len(path_parts) > 5:
-                            backup_info["resource_name"] = path_parts[5]
-                    backups.append(backup_info)
-        return sorted(backups, key=lambda x: x["timestamp"], reverse=True)
+        """列出备份文件。"""
+        return list_backup_files(self.backup_dir, cluster_name, namespace)
